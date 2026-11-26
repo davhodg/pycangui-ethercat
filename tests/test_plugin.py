@@ -152,7 +152,7 @@ def choose(view, slave: int, way: str, index: int | None) -> dict:
 def test_process_data_runs_the_drive_and_the_io(app, view):
     started(app, view)
     assert [s["state"] for s in view.slaves.values()] == ["SAFEOP", "SAFEOP"]
-    assert not view.map_button.isEnabled()
+    assert view.map_button.isEnabled() and not view.period.isEnabled()  # Stop, not a second Start
     statusword = choose(view, 1, "in", 0x6041)
     assert not view.set_button.isEnabled(), "an input is not set"
     view.all_slaves.setChecked(True)
@@ -175,6 +175,22 @@ def test_process_data_runs_the_drive_and_the_io(app, view):
     view.scan()
     assert wait_for(app, lambda: view.mapped is None and view.slaves[1]["state"] == "PREOP")
     assert view.map_button.isEnabled() and view.pdo_table.rowCount() == 0
+
+
+def test_stop_takes_the_slaves_to_pre_op_and_start_runs_again(app, view):
+    started(app, view)
+    view.all_slaves.setChecked(True)
+    view.set_state("OP")
+    assert wait_for(app, lambda: view.slaves[2]["state"] == "OP")
+
+    view._start_or_stop()
+    assert wait_for(app, lambda: view.mapped is None)
+    assert [s["state"] for s in view.slaves.values()] == ["PREOP", "PREOP"]
+    assert view.pdo_table.rowCount() == 0 and view.period.isEnabled()
+
+    view._start_or_stop()
+    assert wait_for(app, lambda: view.process is not None)
+    assert [s["state"] for s in view.slaves.values()] == ["SAFEOP", "SAFEOP"]
 
 
 def test_objects_are_read_and_written(app, view):

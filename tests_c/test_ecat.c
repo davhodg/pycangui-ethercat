@@ -608,6 +608,45 @@ static void test_process_data_refusals_and_its_end( void )
     return;
 }
 
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  stop takes the slaves out of OP to PRE-OP, stops the cycle, and the data can start again.
+
+    \return None.
+*/
+static void test_stop_leaves_pre_op_ready_to_start_again( void )
+{
+    start_scanned();
+    ask( "{\"id\":4,\"op\":\"stop\"}" );
+    CHECK( has( "\"error\":\"not_mapped\"" ) );
+
+    ask( "{\"id\":5,\"op\":\"map\"}" );
+    ask( "{\"id\":6,\"op\":\"state\",\"state\":\"OP\"}" );
+    ask( "{\"id\":7,\"op\":\"stop\"}" );
+    CHECK( has( "\"ok\":true" ) && has( "{\"position\":1,\"state\":\"PREOP\",\"error\":false" ) &&
+           has( "{\"position\":2,\"state\":\"PREOP\",\"error\":false" ) );
+    ecat_cycle_snapshot( &helper.snap );
+    CHECK( !helper.snap.running );
+    ask( "{\"id\":8,\"op\":\"process\"}" );
+    CHECK( has( "\"error\":\"not_mapped\"" ) );
+    ask( "{\"id\":9,\"op\":\"state\",\"state\":\"SAFEOP\"}" );
+    CHECK( has( "\"error\":\"not_mapped\"" ) );
+
+    ask( "{\"id\":10,\"op\":\"map\"}" );
+    CHECK( has( "\"ok\":true" ) && has( "{\"position\":1,\"state\":\"SAFEOP\"" ) );
+    CHECK( inputs_become( "5002" ) );
+
+    /* A slave that will not go to PRE-OP: said, and the cycle stops all the same. */
+    ask( "{\"id\":11,\"op\":\"state\",\"slave\":1,\"state\":\"PREOP\"}" );
+    ask( "{\"id\":11,\"op\":\"state\",\"slave\":1,\"state\":\"BOOT\"}" );
+    ask( "{\"id\":12,\"op\":\"stop\"}" );
+    CHECK( has( "\"error\":\"state_refused\"" ) && has( "{\"position\":1,\"state\":\"BOOT\",\"error\":true" ) &&
+           has( "{\"position\":2,\"state\":\"PREOP\",\"error\":false" ) );         /* BOOT goes only to INIT */
+    ecat_cycle_snapshot( &helper.snap );
+    CHECK( !helper.snap.running );
+    return;
+}
+
 /*!@}*/
 
 /*============================================================================*/
@@ -637,6 +676,7 @@ int main( void )
     test_outputs_reach_the_slaves_in_op_and_inputs_come_back();
     test_a_slave_leaving_op_is_counted();
     test_process_data_refusals_and_its_end();
+    test_stop_leaves_pre_op_ready_to_start_again();
     ecat_helper_init( &helper, ecat_port_instance() );     /* stops the last cycle */
 
     ( void )printf( "%u checks, %u failed\n", (unsigned int)checks, (unsigned int)failures );

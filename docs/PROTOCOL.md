@@ -60,6 +60,7 @@ speak, and the hello is not taken.
 | `map` | `period_us` (default 4000, 1000 to 100000) | Maps the process data and starts the cycle (below). `period_us`, `out_len`, `in_len`, `expected_wkc`, `slaves` (states), `areas`, `entries` |
 | `pdo_write` | `slave`, `data`, and either `index` and `sub` (an output in `entries`) or `bit` and `bits` (within the slave's own outputs) | |
 | `process` | | `running`, `period_us`, `cycles`, `wkc`, `expected_wkc`, `wkc_errors`, `late`, `outputs`, `inputs` |
+| `stop` | | Every slave to PRE-OP, then the cycle stops and the map is forgotten. `slaves`, as for `states`. Stops even when a slave refuses (`state_refused`). |
 
 A slave in full:
 
@@ -76,8 +77,10 @@ register, set when it refused a state change. `al_status` is its AL status code,
 `map` needs every slave in PRE-OP. It lays each slave's process data out one after another, the
 outputs (master to slaves) in one image and the inputs in another, asks the slaves for SAFE-OP,
 and starts the helper's cyclic thread: from then on the outputs go round the ring and the inputs
-come back every `period_us`, whatever else the helper is doing. Then `state` `OP`. A `scan`,
-`open` or `close` stops the cycle and forgets the map; so does the connection closing.
+come back every `period_us`, whatever else the helper is doing. Then `state` `OP`. `stop` takes
+the slaves back to PRE-OP while the cycle still runs -- so they leave OP as asked, not by their
+watchdog -- then stops it; `map` can then start it again. A `scan`, `open` or `close` also stops
+the cycle and forgets the map, without the state change; so does the connection closing.
 
 Bits are counted from the first bit of the outputs or of the inputs, a byte's lowest bit first,
 so a value of whole bytes at a whole byte is little-endian, as on the wire. Byte values (`data`,
@@ -112,6 +115,6 @@ so a value of whole bytes at a whole byte is little-endian, as on the wire. Byte
 | `timeout` | No answer in time (a slave in INIT has no mailbox running) |
 | `state_refused` | A slave did not reach the state asked for; `slaves` says where each got to |
 | `bad_state` | Not every slave is in PRE-OP, which `map` needs |
-| `not_mapped` | SAFE-OP, OP, `pdo_write` and `process` need `map` first |
+| `not_mapped` | SAFE-OP, OP, `pdo_write`, `process` and `stop` need `map` first |
 | `no_entry` | `pdo_write` named no output in the process data |
 | `failed` | Anything else the master reported |

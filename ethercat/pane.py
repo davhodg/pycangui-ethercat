@@ -311,10 +311,11 @@ class EthercatView(QWidget):
         )
         self.map_button = QPushButton("Start")
         self.map_button.setToolTip(
-            "Map every slave's process data and send it every cycle. The slaves must be\n"
-            "in Pre-Op, and are in Safe-Op after: then Op. Scan again to stop."
+            "Start: map every slave's process data and send it every cycle. The slaves\n"
+            "must be in Pre-Op, and are in Safe-Op after: then Op.\n"
+            "Stop: every slave to Pre-Op, then the cycle stops."
         )
-        self.map_button.clicked.connect(self.start_process)
+        self.map_button.clicked.connect(self._start_or_stop)
         self.counters = QLabel()
         self.counters.setToolTip(
             "Working counter: what came back against what should, when every slave takes part.\n"
@@ -444,7 +445,8 @@ class EthercatView(QWidget):
         self.read_button.setEnabled(chosen)
         self.write_button.setEnabled(chosen)
         self.period.setEnabled(is_open and bool(self.slaves) and self.mapped is None)
-        self.map_button.setEnabled(is_open and bool(self.slaves) and self.mapped is None)
+        self.map_button.setEnabled(is_open and bool(self.slaves))
+        self.map_button.setText("Stop" if self.mapped is not None else "Start")
         output = self.chosen_row()
         self.set_button.setEnabled(self.mapped is not None and output is not None and output["dir"] == "out")
 
@@ -612,8 +614,24 @@ class EthercatView(QWidget):
             self.result.setText(f"{where} written: {data.hex(' ').upper()}")
 
     # --- process data ---------------------------------------------------------------------
+    def _start_or_stop(self) -> None:
+        if self.mapped is None:
+            self.start_process()
+        else:
+            self.stop_process()
+
     def start_process(self) -> None:
         self.ring.call("map", self._mapped, period_us=self.period.value() * 1000)
+
+    def stop_process(self) -> None:
+        self.ring.call("stop", self._stopped)
+
+    def _stopped(self, answer, error) -> None:
+        # Stopped either way; a slave that would not go to Pre-Op is in the answer.
+        self._unmapped()
+        self._states(answer, error)
+        if error is not None:
+            self.process_result.setText(error_text(error))
 
     def _mapped(self, answer, error) -> None:
         if error is not None:

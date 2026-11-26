@@ -290,8 +290,9 @@ ecat_port_sts_t ecat_port_sdo_write( ECAT_PORT_CTX_T* const ctx_p,
 
     Every slave must be in PRE-OP. Each slave's process data is placed one
     after another, outputs in one part and inputs in another; the slaves are
-    then asked for SAFE-OP, as SOEM's mapping does. Called on the protocol
-    thread, with no cycle running.
+    then asked for SAFE-OP, as SOEM's mapping does. A map again after one
+    since the last scan may scan first. Called on the protocol thread, with no
+    cycle running.
 
     \param  ctx_p   The master.
     \param  image_p The image's size.

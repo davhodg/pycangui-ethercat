@@ -56,6 +56,7 @@ static void do_sdo_write( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const
 static void do_map( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p );
 static void do_pdo_write( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p );
 static void do_process( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p );
+static void do_stop( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p );
 static void unmap( ECAT_HELPER_CTX_T* const ctx_p );
 static void read_entries( ECAT_HELPER_CTX_T* const ctx_p );
 static void read_assignment( ECAT_HELPER_CTX_T* const ctx_p,
@@ -266,6 +267,10 @@ static void handle( ECAT_HELPER_CTX_T* const ctx_p, char const op[], ECAT_JSON_O
     else if( 0 == strcmp( op, "process" ) )
     {
         do_process( ctx_p, out_p );
+    }
+    else if( 0 == strcmp( op, "stop" ) )
+    {
+        do_stop( ctx_p, out_p );
     }
     else
     {
@@ -828,6 +833,48 @@ static void do_process( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const o
         ecat_json_out_u32( out_p, "late", ctx_p->snap.late );
         ecat_json_out_hex( out_p, "outputs", ctx_p->snap.outputs, ctx_p->snap.out_len );
         ecat_json_out_hex( out_p, "inputs", ctx_p->snap.inputs, ctx_p->snap.in_len );
+        ecat_json_out_close( out_p, false );
+    }
+    return;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  stop: take every slave to PRE-OP, then stop the cycle and forget the map.
+
+    PRE-OP is asked for while the cycle still runs, so the slaves leave OP as
+    asked rather than by their watchdog, with an error; and PRE-OP is what a
+    map needs, so the process data can be started again. The cycle stops even
+    when a slave refuses, which the answer says, with every slave's state.
+
+    \param  ctx_p   The helper.
+    \param  out_p   The answer.
+
+    \return None.
+*/
+static void do_stop( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p )
+{
+    ECAT_JSON_FIELD_T const* const id_p = ecat_json_get( &ctx_p->request, "id", ECAT_JSON_KIND_NUMBER );
+
+    if( !ctx_p->mapped )
+    {
+        put_error( out_p, id_p, "not_mapped" );
+    }
+    else
+    {
+        ecat_port_sts_t const sts = ecat_port_set_state( ctx_p->port_p, 0U, ECAT_PORT_STATE_PREOP,
+                                                         ECAT_HELPER_STATE_TIMEOUT_MS * 1000U );
+
+        unmap( ctx_p );
+        if( ECAT_PORT_STS_OK == sts )
+        {
+            put_ok( out_p, id_p );
+        }
+        else
+        {
+            put_port_error_open( out_p, id_p, sts, 0U );
+        }
+        put_slaves( ctx_p, out_p, false );
         ecat_json_out_close( out_p, false );
     }
     return;

@@ -64,6 +64,7 @@ struct ecat_port_ctx
     ecx_contextt      soem;                     /*!< SOEM's context: the port, the slave list, the error list */
     bool              open;                     /*!< Whether ecx_init() has opened an adapter */
     bool              mapped;                   /*!< Whether the slaves' process data is mapped into iomap */
+    bool              map_used;                 /*!< A map has been made since the last scan */
     ECAT_PORT_IMAGE_T image;                    /*!< The image's size, once mapped */
     uint8             iomap[SOEM_IOMAP_LEN];    /*!< SOEM's process image: outputs, then inputs */
 };
@@ -226,6 +227,7 @@ void ecat_port_close( ECAT_PORT_CTX_T* const ctx_p )
     }
     ctx_p->soem.slavecount = 0;
     ctx_p->mapped = false;
+    ctx_p->map_used = false;
     return;
 }
 
@@ -239,6 +241,7 @@ ecat_port_sts_t ecat_port_scan( ECAT_PORT_CTX_T* const ctx_p, size_t* const coun
 
     *count_p = 0U;
     ctx_p->mapped = false;      /* a scan configures the ring afresh */
+    ctx_p->map_used = false;
     if( !ctx_p->open )
     {
         sts = ECAT_PORT_STS_NOT_OPEN;
@@ -445,6 +448,10 @@ ecat_port_sts_t ecat_port_sdo_write( ECAT_PORT_CTX_T* const ctx_p,
     ecx_config_map_group() reads each CoE slave's PDO assignment by SDO, lays
     the process data out in iomap, writes the sync managers and FMMUs, and asks
     each slave for SAFE-OP on its way.
+
+    It hands each slave its FMMUs from where the last map left off, and only a
+    scan (ecx_config_init) starts them again: so a second map since the last
+    scan scans first, which takes the slaves through INIT back to PRE-OP.
 */
 ecat_port_sts_t ecat_port_map( ECAT_PORT_CTX_T* const ctx_p, ECAT_PORT_IMAGE_T* const image_p )
 {
@@ -475,12 +482,32 @@ ecat_port_sts_t ecat_port_map( ECAT_PORT_CTX_T* const ctx_p, ECAT_PORT_IMAGE_T* 
         }
     }
 
+    if( ( ECAT_PORT_STS_OK == sts ) && ctx_p->map_used )
+    {
+        /* Mapped before since the last scan: scan again, for fresh FMMUs. */
+        if( ecx_config_init( &ctx_p->soem ) > 0 )
+        {
+            ( void )ecx_statecheck( &ctx_p->soem, 0U, EC_STATE_PRE_OP, EC_TIMEOUTSTATE );
+            ctx_p->map_used = false;
+        }
+        else
+        {
+            ctx_p->soem.slavecount = 0;
+            sts = ECAT_PORT_STS_NO_SLAVES;
+        }
+    }
+    else
+    {
+        /* Not ready, or the scan's own configuration is still fresh. */
+    }
+
     if( ECAT_PORT_STS_OK == sts )
     {
         ec_groupt const* const group_p = &ctx_p->soem.grouplist[SOEM_GROUP];
 
         ( void )memset( ctx_p->iomap, 0, sizeof( ctx_p->iomap ) );
         ( void )ecx_config_map_group( &ctx_p->soem, ctx_p->iomap, SOEM_GROUP );
+        ctx_p->map_used = true;
         ( void )ecx_statecheck( &ctx_p->soem, 0U, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE );
         ( void )ecx_readstate( &ctx_p->soem );
 
