@@ -15,6 +15,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -129,8 +130,14 @@ def test_scan_states_and_objects_through_the_client(client):
 
     with pytest.raises(HelperError) as refused:
         client.request("state", slave=1, state="OP")
+    assert refused.value.code == "not_mapped"
+    client.request("state", slave=1, state="INIT")
+    with pytest.raises(HelperError) as refused:
+        client.request("state", slave=1, state="BOOT")  # BOOT only from PRE-OP
     assert refused.value.code == "state_refused"
     assert refused.value.answer["slaves"][0]["al_status"] == 0x0011
+    client.request("state", slave=1, state="INIT")
+    client.request("state", slave=1, state="PREOP")
 
     assert client.request("sdo_read", slave=1, index=0x1000, sub=0)["data"] == "92010200"
     client.request("sdo_write", slave=1, index=0x6060, sub=0, data="03")
@@ -138,6 +145,49 @@ def test_scan_states_and_objects_through_the_client(client):
     with pytest.raises(HelperError) as aborted:
         client.request("sdo_write", slave=1, index=0x6041, sub=0, data="0000")
     assert (aborted.value.code, aborted.value.abort) == ("sdo_abort", 0x06010002)
+
+
+def inputs_of(client: Client, entry: dict) -> int:
+    """An input entry's value, from the inputs the cycle last took."""
+    image = int.from_bytes(bytes.fromhex(client.request("process")["inputs"]), "little")
+    return (image >> entry["bit"]) & ((1 << entry["bits"]) - 1)
+
+
+def wait_for(check, seconds: float = 2.0) -> bool:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if check():
+            return True
+        time.sleep(0.005)
+    return check()
+
+
+def test_a_drive_enabled_through_process_data(client):
+    """Mapped, in OP, the cycle carries the controlword to the drive and its statusword back."""
+    client.request("open", adapter=RING)
+    client.request("scan")
+    mapped = client.request("map", period_us=2000)
+    assert [s["state"] for s in mapped["slaves"]] == ["SAFEOP", "SAFEOP"]
+    entries = {(e["slave"], e["dir"], e["index"]): e for e in mapped["entries"]}
+    statusword = entries[(1, "in", 0x6041)]
+    client.request("state", state="OP")
+
+    for control, state in ((0x06, 0x21), (0x07, 0x23), (0x0F, 0x27)):
+        client.request("pdo_write", slave=1, index=0x6040, sub=0, data=control.to_bytes(2, "little").hex())
+        assert wait_for(lambda state=state: inputs_of(client, statusword) & 0x6F == state)
+
+    process = client.request("process")
+    assert process["running"] is True
+    assert process["wkc"] == process["expected_wkc"] == 6
+    assert process["cycles"] > 0 and process["wkc_errors"] == 0
+
+    with pytest.raises(HelperError) as refused:
+        client.request("pdo_write", slave=1, index=0x6041, sub=0, data="0000")
+    assert refused.value.code == "no_entry"
+    client.request("scan")
+    with pytest.raises(HelperError) as ended:
+        client.request("process")
+    assert ended.value.code == "not_mapped"
 
 
 def test_an_adapter_with_nothing_on_it(client):

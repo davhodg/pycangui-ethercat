@@ -109,17 +109,72 @@ def test_open_and_scan_fill_the_table(app, view):
     assert view.read_button.isEnabled() and view.state_buttons["OP"].isEnabled()
 
 
-def test_a_refused_state_shows_where_the_slave_stayed_and_why(app, view):
+def started(app, view) -> None:
+    """Opened, scanned, and the process data started: the slaves in SAFE-OP."""
     opened_and_scanned(app, view)
+    view.start_process()
+    assert wait_for(app, lambda: view.process is not None)
+
+
+def test_a_refused_state_shows_where_the_slave_stayed_and_why(app, view):
+    started(app, view)
+    view.set_state("INIT")
+    assert wait_for(app, lambda: view.slaves[1]["state"] == "INIT")
     view.set_state("OP")
     assert wait_for(app, lambda: view.slaves[1].get("error"))
-    assert view.slaves[1]["state"] == "PREOP" and view.slaves[1]["al_status"] == 0x0011
+    assert view.slaves[1]["state"] == "INIT" and view.slaves[1]["al_status"] == 0x0011
     assert view.table.item(0, 5).text().startswith("0x0011")
 
+    view.set_state("PREOP")
     view.all_slaves.setChecked(True)
     view.set_state("SAFEOP")
-    assert wait_for(app, lambda: view.slaves[2]["state"] == "SAFEOP")
-    assert view.slaves[1]["state"] == "SAFEOP" and not view.slaves[1]["error"]
+    assert wait_for(app, lambda: view.slaves[1]["state"] == "SAFEOP" and not view.slaves[1]["error"])
+    assert view.slaves[2]["state"] == "SAFEOP"
+
+
+def test_safe_op_waits_for_the_process_data(app, view):
+    opened_and_scanned(app, view)
+    assert view.map_button.isEnabled()
+    view.set_state("SAFEOP")
+    app.processEvents()
+    assert wait_for(app, lambda: not view.ring._worker.busy())
+    assert view.slaves[1]["state"] == "PREOP"
+
+
+def choose(view, slave: int, way: str, index: int | None) -> dict:
+    for number, row in enumerate(view.rows):
+        if (row["slave"], row["dir"], row.get("index")) == (slave, way, index):
+            view.pdo_table.selectRow(number)
+            return row
+    raise AssertionError(f"no row for slave {slave} {way} {index}")
+
+
+def test_process_data_runs_the_drive_and_the_io(app, view):
+    started(app, view)
+    assert [s["state"] for s in view.slaves.values()] == ["SAFEOP", "SAFEOP"]
+    assert not view.map_button.isEnabled()
+    statusword = choose(view, 1, "in", 0x6041)
+    assert not view.set_button.isEnabled(), "an input is not set"
+    view.all_slaves.setChecked(True)
+    view.set_state("OP")
+    assert wait_for(app, lambda: view.slaves[2]["state"] == "OP")
+
+    for control, state in ((0x06, 0x21), (0x07, 0x23), (0x0F, 0x27)):
+        choose(view, 1, "out", 0x6040)
+        view.output_value.setText(hex(control))
+        view.set_output()
+        assert wait_for(app, lambda state=state: (view.value_of(statusword) or 0) & 0x6F == state)
+
+    io_in = choose(view, 2, "in", None)
+    choose(view, 2, "out", None)
+    view.output_value.setText("-91")  # 0xA5 as a signed byte
+    view.set_output()
+    assert wait_for(app, lambda: view.value_of(io_in) == 0xA5)
+    assert view.process["wkc"] == view.process["expected_wkc"] == 6
+
+    view.scan()
+    assert wait_for(app, lambda: view.mapped is None and view.slaves[1]["state"] == "PREOP")
+    assert view.map_button.isEnabled() and view.pdo_table.rowCount() == 0
 
 
 def test_objects_are_read_and_written(app, view):

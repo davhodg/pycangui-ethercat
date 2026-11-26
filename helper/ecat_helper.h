@@ -32,6 +32,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ecat_cycle.h"
 #include "ecat_json.h"
 #include "ecat_port.h"
 
@@ -43,6 +44,7 @@
 #define ECAT_HELPER_PROTOCOL        ( 1U )      /*!< The protocol version this helper speaks */
 #define ECAT_HELPER_DATA_LEN        ( ( ECAT_JSON_TEXT_LEN - 1U ) / 2U )   /*!< Longest SDO value, in bytes: what fits a request as hex */
 #define ECAT_HELPER_STATE_TIMEOUT_MS ( 2000U )  /*!< How long a state change is waited for, unless the request says */
+#define ECAT_HELPER_MAX_ENTRIES     ( 512U )    /*!< Most PDO entries listed, over all slaves */
 
 /*!@}*/
 
@@ -50,6 +52,17 @@
 /*! \name Types */
 /*============================================================================*/
 /*!@{*/
+
+/*! One object in the process data: where its bits are. */
+typedef struct
+{
+    uint16_t slave;     /*!< The slave's position */
+    uint16_t index;     /*!< The object's index */
+    uint8_t  sub;       /*!< Its sub-index */
+    uint8_t  bits;      /*!< How many bits it has */
+    bool     out;       /*!< true for an output (RxPDO), false for an input (TxPDO) */
+    uint32_t bit;       /*!< Its first bit, counted from the first bit of the outputs or of the inputs */
+} ECAT_HELPER_ENTRY_T;
 
 /*! The helper's state between requests. */
 typedef struct
@@ -59,6 +72,10 @@ typedef struct
     ECAT_JSON_OBJ_T     request;                                /*!< The request being handled */
     uint8_t             data[ECAT_HELPER_DATA_LEN];             /*!< An SDO value on its way through */
     ECAT_PORT_ADAPTER_T adapters[ECAT_PORT_MAX_ADAPTERS];       /*!< The adapters, while they are listed */
+    bool                mapped;                                 /*!< The process data is mapped and cycling */
+    ECAT_HELPER_ENTRY_T entries[ECAT_HELPER_MAX_ENTRIES];       /*!< The PDO entries the map found */
+    size_t              entry_count;                            /*!< How many */
+    ECAT_CYCLE_SNAP_T   snap;                                   /*!< The cycle, copied for an answer */
 } ECAT_HELPER_CTX_T;
 
 /*!@}*/
@@ -70,7 +87,7 @@ typedef struct
 
 /*----------------------------------------------------------------------------*/
 /*!
-    \brief  Set up a helper over a master, waiting for its hello.
+    \brief  Set up a helper over a master, waiting for its hello; stops a cycle left running.
 
     \param  ctx_p   The helper.
     \param  port_p  The master it works.

@@ -23,17 +23,20 @@ else()
     set(ECAT_WARNINGS -Wall -Wextra -Wpedantic -Wconversion -Werror)
 endif()
 
-# The protocol, without the ring: shared by both helpers and the unit tests.
-add_library(ecat_core STATIC helper/ecat_json.c helper/ecat_helper.c)
+# The protocol and the cycle, without the ring: shared by both helpers and the unit tests.
+add_library(ecat_core STATIC helper/ecat_json.c helper/ecat_helper.c helper/ecat_cycle.c helper/ecat_os.c)
 target_include_directories(ecat_core PUBLIC helper)
 target_compile_options(ecat_core PRIVATE ${ECAT_WARNINGS})
+if(WIN32)
+    target_link_libraries(ecat_core PUBLIC winmm)   # timeBeginPeriod, where there is no high-resolution timer
+else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(ecat_core PUBLIC Threads::Threads)
+endif()
 
 set(ECAT_NET_LIBS)
 if(WIN32)
     list(APPEND ECAT_NET_LIBS ws2_32)
-else()
-    find_package(Threads REQUIRED)
-    list(APPEND ECAT_NET_LIBS Threads::Threads)
 endif()
 
 add_executable(ecat_helper_fake helper/ecat_main.c helper/ecat_port_fake.c)

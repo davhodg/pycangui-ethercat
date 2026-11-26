@@ -1,14 +1,17 @@
 # pycangui-ethercat
 
 EtherCAT for [pycangui](https://github.com/davhodg/pycangui): a plugin that scans an EtherCAT
-ring, sets the slaves' states, and reads and writes their objects by CoE (CANopen over EtherCAT).
+ring, sets the slaves' states, reads and writes their objects by CoE (CANopen over EtherCAT), and
+runs their process data.
 
 A commissioning and diagnostic tool, not a motion controller. On Windows frames go out through
 Npcap, which works with almost any network adapter, USB dongles included, but does not hold the
 steady 1 ms cycle that cyclic synchronous modes and distributed clocks need.
 
-**Early work.** What there is now: choose an adapter, scan, set states, read and write objects.
-Process data, the object dictionary from the slave, and driving a CiA 402 drive come next.
+**Early work.** What there is now: choose an adapter, scan, set states, read and write objects,
+and run the process data -- mapped from the slaves' PDO assignments, sent every few milliseconds
+by the helper's own thread, its values shown live and its outputs set by hand. The object
+dictionary from the slave, and driving a CiA 402 drive, come next.
 
 ## How it is made
 

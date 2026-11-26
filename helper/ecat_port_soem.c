@@ -48,6 +48,8 @@
 #endif /* #ifndef ECAT_SOEM_VERSION */
 
 #define SOEM_PACKET_TOO_SMALL   ( 3U )      /*!< SOEM's packet error: the data container is too small for the value */
+#define SOEM_IOMAP_LEN          ( 65536U )  /*!< SOEM's IOmap: SOEM maps into it without a bound, so far more than the image allows */
+#define SOEM_GROUP              ( 0U )      /*!< All slaves are in SOEM's group 0 */
 
 /*!@}*/
 
@@ -59,8 +61,11 @@
 /*! The SOEM master's state. */
 struct ecat_port_ctx
 {
-    ecx_contextt soem;      /*!< SOEM's context: the port, the slave list, the error list */
-    bool         open;      /*!< Whether ecx_init() has opened an adapter */
+    ecx_contextt      soem;                     /*!< SOEM's context: the port, the slave list, the error list */
+    bool              open;                     /*!< Whether ecx_init() has opened an adapter */
+    bool              mapped;                   /*!< Whether the slaves' process data is mapped into iomap */
+    ECAT_PORT_IMAGE_T image;                    /*!< The image's size, once mapped */
+    uint8             iomap[SOEM_IOMAP_LEN];    /*!< SOEM's process image: outputs, then inputs */
 };
 
 /*!@}*/
@@ -84,8 +89,11 @@ static ecat_port_sts_t sdo_failure( ECAT_PORT_CTX_T* const ctx_p, uint32_t* cons
 /*
     MISRA C:2023 Dir 4.12 / the coding standard's "no file-scope mutable state":
     deviation. SOEM's ecx_contextt holds the whole slave list and its mailbox
-    buffers, far too large for a stack. There is one master per helper process,
-    and only the protocol thread touches it.
+    buffers, far too large for a stack, and the process image. There is one
+    master per helper process. The protocol thread uses it, and the cycle
+    thread too through ecat_port_exchange() alone, which SOEM allows alongside
+    mailboxes and states; the protocol thread maps and closes only with no
+    cycle running.
 */
 static ECAT_PORT_CTX_T soem_ctx;    /*!< The one master */
 
@@ -217,6 +225,7 @@ void ecat_port_close( ECAT_PORT_CTX_T* const ctx_p )
         /* Nothing open. */
     }
     ctx_p->soem.slavecount = 0;
+    ctx_p->mapped = false;
     return;
 }
 
@@ -229,6 +238,7 @@ ecat_port_sts_t ecat_port_scan( ECAT_PORT_CTX_T* const ctx_p, size_t* const coun
     ecat_port_sts_t sts;
 
     *count_p = 0U;
+    ctx_p->mapped = false;      /* a scan configures the ring afresh */
     if( !ctx_p->open )
     {
         sts = ECAT_PORT_STS_NOT_OPEN;
@@ -426,6 +436,155 @@ ecat_port_sts_t ecat_port_sdo_write( ECAT_PORT_CTX_T* const ctx_p,
         /* No mailbox to write through. */
     }
     return sts;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \note   Interface documented in ecat_port.h.
+
+    ecx_config_map_group() reads each CoE slave's PDO assignment by SDO, lays
+    the process data out in iomap, writes the sync managers and FMMUs, and asks
+    each slave for SAFE-OP on its way.
+*/
+ecat_port_sts_t ecat_port_map( ECAT_PORT_CTX_T* const ctx_p, ECAT_PORT_IMAGE_T* const image_p )
+{
+    ecat_port_sts_t sts = ECAT_PORT_STS_OK;
+
+    ctx_p->mapped = false;
+    if( !ctx_p->open )
+    {
+        sts = ECAT_PORT_STS_NOT_OPEN;
+    }
+    else if( ctx_p->soem.slavecount <= 0 )
+    {
+        sts = ECAT_PORT_STS_NO_SLAVES;
+    }
+    else
+    {
+        ( void )ecx_readstate( &ctx_p->soem );
+        for( int32_t idx = 1; idx <= ctx_p->soem.slavecount; idx++ )
+        {
+            if( EC_STATE_PRE_OP != ctx_p->soem.slavelist[idx].state )
+            {
+                sts = ECAT_PORT_STS_BAD_STATE;
+            }
+            else
+            {
+                /* Ready to map. */
+            }
+        }
+    }
+
+    if( ECAT_PORT_STS_OK == sts )
+    {
+        ec_groupt const* const group_p = &ctx_p->soem.grouplist[SOEM_GROUP];
+
+        ( void )memset( ctx_p->iomap, 0, sizeof( ctx_p->iomap ) );
+        ( void )ecx_config_map_group( &ctx_p->soem, ctx_p->iomap, SOEM_GROUP );
+        ( void )ecx_statecheck( &ctx_p->soem, 0U, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE );
+        ( void )ecx_readstate( &ctx_p->soem );
+
+        if( ( group_p->Obytes > ECAT_PORT_IMAGE_LEN ) || ( group_p->Ibytes > ECAT_PORT_IMAGE_LEN ) )
+        {
+            sts = ECAT_PORT_STS_TOO_LONG;
+        }
+        else
+        {
+            image_p->out_len = (size_t)group_p->Obytes;
+            image_p->in_len = (size_t)group_p->Ibytes;
+            /* An LRW counts 1 for each slave that reads and 2 for each that writes. */
+            image_p->expected_wkc = (uint16_t)( ( group_p->outputsWKC * 2U ) + group_p->inputsWKC );
+            ctx_p->image = *image_p;
+            ctx_p->mapped = true;
+        }
+    }
+    else
+    {
+        /* Nothing mapped. */
+    }
+    return sts;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \note   Interface documented in ecat_port.h.
+*/
+ecat_port_sts_t ecat_port_area( ECAT_PORT_CTX_T* const ctx_p,
+                                uint16_t const position,
+                                ECAT_PORT_AREA_T* const area_p )
+{
+    ecat_port_sts_t sts;
+
+    if( !ctx_p->mapped || ( 0U == position ) || ( (int32_t)position > ctx_p->soem.slavecount ) )
+    {
+        sts = ECAT_PORT_STS_NO_SLAVE;
+    }
+    else
+    {
+        ec_slavet const* const slave_p = &ctx_p->soem.slavelist[position];
+        ec_groupt const* const group_p = &ctx_p->soem.grouplist[SOEM_GROUP];
+
+        ( void )memset( area_p, 0, sizeof( *area_p ) );
+        if( ( NULL != slave_p->outputs ) && ( 0U != slave_p->Obits ) )
+        {
+            area_p->out_bit = ( (uint32_t)( slave_p->outputs - group_p->outputs ) * 8U ) + slave_p->Ostartbit;
+            area_p->out_bits = slave_p->Obits;
+        }
+        else
+        {
+            /* No outputs. */
+        }
+        if( ( NULL != slave_p->inputs ) && ( 0U != slave_p->Ibits ) )
+        {
+            area_p->in_bit = ( (uint32_t)( slave_p->inputs - group_p->inputs ) * 8U ) + slave_p->Istartbit;
+            area_p->in_bits = slave_p->Ibits;
+        }
+        else
+        {
+            /* No inputs. */
+        }
+        sts = ECAT_PORT_STS_OK;
+    }
+    return sts;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \note   Interface documented in ecat_port.h.
+
+    SOEM keeps process data and mailboxes apart itself -- each frame has its
+    own index in the port's buffers, under SOEM's own locks -- so this runs on
+    the cycle thread while the protocol thread uses SDOs and states.
+*/
+void ecat_port_exchange( ECAT_PORT_CTX_T* const ctx_p,
+                         uint8_t const outputs[],
+                         uint8_t inputs[],
+                         uint16_t* const wkc_p )
+{
+    *wkc_p = 0U;
+    if( ctx_p->mapped )
+    {
+        ec_groupt const* const group_p = &ctx_p->soem.grouplist[SOEM_GROUP];
+        int wkc;
+
+        ( void )memcpy( group_p->outputs, outputs, ctx_p->image.out_len );
+        ( void )ecx_send_processdata( &ctx_p->soem );
+        wkc = ecx_receive_processdata( &ctx_p->soem, EC_TIMEOUTRET );
+        ( void )memcpy( inputs, group_p->inputs, ctx_p->image.in_len );
+        if( wkc > 0 )
+        {
+            *wkc_p = (uint16_t)wkc;
+        }
+        else
+        {
+            /* No frame came back. */
+        }
+    }
+    else
+    {
+        /* Nothing mapped to send. */
+    }
+    return;
 }
 
 /*!@}*/

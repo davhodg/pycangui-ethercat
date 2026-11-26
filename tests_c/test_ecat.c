@@ -29,8 +29,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ecat_cycle.h"
 #include "ecat_helper.h"
 #include "ecat_json.h"
+#include "ecat_os.h"
 #include "ecat_port.h"
 
 /*============================================================================*/
@@ -107,8 +109,8 @@ static bool has( char const text[] )
 */
 static void start( void )
 {
+    ecat_helper_init( &helper, ecat_port_instance() );     /* stops a cycle an earlier test left */
     ecat_port_close( ecat_port_instance() );
-    ecat_helper_init( &helper, ecat_port_instance() );
     ask( "{\"id\":1,\"op\":\"hello\",\"version\":1}" );
     return;
 }
@@ -319,11 +321,19 @@ static void test_a_scan_lists_the_slaves_in_preop( void )
 static void test_states_go_a_step_at_a_time( void )
 {
     start_scanned();
+    ask( "{\"id\":4,\"op\":\"state\",\"slave\":1,\"state\":\"SAFEOP\"}" );
+    CHECK( has( "\"ok\":false" ) && has( "\"error\":\"not_mapped\"" ) );
+    ask( "{\"id\":4,\"op\":\"map\"}" );
+    CHECK( has( "\"ok\":true" ) );
+
+    ask( "{\"id\":4,\"op\":\"state\",\"slave\":1,\"state\":\"INIT\"}" );
+    CHECK( has( "\"ok\":true" ) && has( "{\"position\":1,\"state\":\"INIT\"" ) );
     ask( "{\"id\":4,\"op\":\"state\",\"slave\":1,\"state\":\"OP\"}" );
     CHECK( has( "\"ok\":false" ) && has( "\"error\":\"state_refused\"" ) );
-    CHECK( has( "{\"position\":1,\"state\":\"PREOP\",\"error\":true,\"al_status\":17}" ) );
-    CHECK( has( "{\"position\":2,\"state\":\"PREOP\",\"error\":false" ) );
+    CHECK( has( "{\"position\":1,\"state\":\"INIT\",\"error\":true,\"al_status\":17}" ) );
+    CHECK( has( "{\"position\":2,\"state\":\"SAFEOP\",\"error\":false" ) );
 
+    ask( "{\"id\":5,\"op\":\"state\",\"slave\":1,\"state\":\"PREOP\"}" );
     ask( "{\"id\":5,\"op\":\"state\",\"state\":\"SAFEOP\"}" );
     CHECK( has( "\"ok\":true" ) && has( "{\"position\":1,\"state\":\"SAFEOP\",\"error\":false,\"al_status\":0}" ) &&
            has( "{\"position\":2,\"state\":\"SAFEOP\"" ) );
@@ -404,6 +414,200 @@ static void test_a_line_too_long_is_answered( void )
     return;
 }
 
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  Ask for the process data until its inputs, as hex, start with a text, or 2 s pass.
+
+    \param  head    The text the inputs' hex starts with.
+
+    \return true when they did.
+*/
+static bool inputs_become( char const head[] )
+{
+    ECAT_OS_TIMER_T timer;
+    uint64_t const end_us = ecat_os_now_us() + 2000000U;
+    bool seen = false;
+    char want[64U];
+
+    ( void )snprintf( want, sizeof( want ), "\"inputs\":\"%s", head );
+    ecat_os_timer_open( &timer );
+    while( !seen && ( ecat_os_now_us() < end_us ) )
+    {
+        ask( "{\"id\":90,\"op\":\"process\"}" );
+        seen = has( want );
+        ecat_os_sleep_until( &timer, ecat_os_now_us() + 2000U );
+    }
+    ecat_os_timer_close( &timer );
+    return seen;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  Wait until the cycle has run some more cycles, or 2 s pass.
+
+    \param  more    How many more.
+
+    \return None.
+*/
+static void cycles_pass( uint32_t const more )
+{
+    ECAT_OS_TIMER_T timer;
+    uint64_t const end_us = ecat_os_now_us() + 2000000U;
+    uint32_t first;
+
+    ecat_cycle_snapshot( &helper.snap );
+    first = helper.snap.cycles;
+    ecat_os_timer_open( &timer );
+    while( ( ( helper.snap.cycles - first ) < more ) && ( ecat_os_now_us() < end_us ) )
+    {
+        ecat_os_sleep_until( &timer, ecat_os_now_us() + 1000U );
+        ecat_cycle_snapshot( &helper.snap );
+    }
+    ecat_os_timer_close( &timer );
+    return;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  The map lays the process data out, lists each object in it, and leaves SAFE-OP.
+
+    \return None.
+*/
+static void test_the_map_lays_out_the_process_data( void )
+{
+    start();
+    ask( "{\"id\":2,\"op\":\"map\"}" );
+    CHECK( has( "\"error\":\"not_open\"" ) );
+
+    start_scanned();
+    ask( "{\"id\":4,\"op\":\"map\",\"period_us\":500}" );
+    CHECK( has( "\"error\":\"bad_request\"" ) );
+    ask( "{\"id\":5,\"op\":\"map\",\"period_us\":2000}" );
+    CHECK( has( "\"ok\":true" ) && has( "\"period_us\":2000" ) && has( "\"out_len\":12" ) && has( "\"in_len\":12" ) &&
+           has( "\"expected_wkc\":6" ) );
+    CHECK( has( "{\"position\":1,\"state\":\"SAFEOP\"" ) && has( "{\"position\":2,\"state\":\"SAFEOP\"" ) );
+    CHECK( has( "{\"slave\":1,\"out_bit\":0,\"out_bits\":88,\"in_bit\":0,\"in_bits\":88}" ) );
+    CHECK( has( "{\"slave\":2,\"out_bit\":88,\"out_bits\":8,\"in_bit\":88,\"in_bits\":8}" ) );
+    CHECK( has( "{\"slave\":1,\"dir\":\"out\",\"index\":24640,\"sub\":0,\"bits\":16,\"bit\":0}" ) );    /* 0x6040 */
+    CHECK( has( "{\"slave\":1,\"dir\":\"out\",\"index\":24672,\"sub\":0,\"bits\":8,\"bit\":16}" ) );    /* 0x6060 */
+    CHECK( has( "{\"slave\":1,\"dir\":\"out\",\"index\":24698,\"sub\":0,\"bits\":32,\"bit\":24}" ) );   /* 0x607A */
+    CHECK( has( "{\"slave\":1,\"dir\":\"out\",\"index\":24831,\"sub\":0,\"bits\":32,\"bit\":56}" ) );   /* 0x60FF */
+    CHECK( has( "{\"slave\":1,\"dir\":\"in\",\"index\":24641,\"sub\":0,\"bits\":16,\"bit\":0}" ) );     /* 0x6041 */
+    CHECK( has( "{\"slave\":1,\"dir\":\"in\",\"index\":24684,\"sub\":0,\"bits\":32,\"bit\":56}" ) );    /* 0x606C */
+    CHECK( !has( "\"slave\":2,\"dir\"" ) );     /* no mailbox: an area, no entries */
+
+    ask( "{\"id\":6,\"op\":\"map\"}" );
+    CHECK( has( "\"error\":\"bad_state\"" ) );  /* in SAFE-OP now, not PRE-OP */
+    return;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  In OP the outputs reach the drive, which walks to Operation enabled and moves.
+
+    \return None.
+*/
+static void test_outputs_reach_the_slaves_in_op_and_inputs_come_back( void )
+{
+    start_scanned();
+    ask( "{\"id\":4,\"op\":\"map\"}" );
+    CHECK( inputs_become( "5002" ) );       /* SAFE-OP: inputs come, statusword Switch on disabled */
+    ask( "{\"id\":5,\"op\":\"state\",\"state\":\"OP\"}" );
+    CHECK( has( "\"ok\":true" ) );
+
+    ask( "{\"id\":6,\"op\":\"pdo_write\",\"slave\":1,\"index\":24640,\"sub\":0,\"data\":\"0600\"}" );
+    CHECK( has( "\"ok\":true" ) );
+    CHECK( inputs_become( "3102" ) );       /* Ready to switch on */
+    ask( "{\"id\":7,\"op\":\"pdo_write\",\"slave\":1,\"index\":24640,\"sub\":0,\"data\":\"0700\"}" );
+    CHECK( inputs_become( "3302" ) );       /* Switched on */
+    ask( "{\"id\":8,\"op\":\"pdo_write\",\"slave\":1,\"index\":24672,\"sub\":0,\"data\":\"03\"}" );
+    ask( "{\"id\":9,\"op\":\"pdo_write\",\"slave\":1,\"index\":24831,\"sub\":0,\"data\":\"e8030000\"}" );
+    ask( "{\"id\":10,\"op\":\"pdo_write\",\"slave\":1,\"index\":24640,\"sub\":0,\"data\":\"0f00\"}" );
+    CHECK( inputs_become( "370203" ) );     /* Operation enabled, in profile velocity */
+    CHECK( has( "\"outputs\":\"0f0003" ) );
+
+    /* The dictionary agrees with the process data, and the drive is moving. */
+    ask( "{\"id\":11,\"op\":\"sdo_read\",\"slave\":1,\"index\":24641,\"sub\":0}" );
+    CHECK( has( "\"data\":\"3702\"" ) );
+    ask( "{\"id\":12,\"op\":\"sdo_read\",\"slave\":1,\"index\":24684,\"sub\":0}" );
+    CHECK( has( "\"data\":\"e8030000\"" ) );
+    ask( "{\"id\":13,\"op\":\"sdo_read\",\"slave\":1,\"index\":24676,\"sub\":0}" );
+    CHECK( has( "\"ok\":true" ) && !has( "\"data\":\"00000000\"" ) );
+
+    /* A slave without a mailbox, by bits within its own outputs: the fake sends them back. */
+    ask( "{\"id\":14,\"op\":\"pdo_write\",\"slave\":2,\"bit\":0,\"bits\":8,\"data\":\"a5\"}" );
+    CHECK( has( "\"ok\":true" ) );
+    CHECK( inputs_become( "3702" ) );
+    cycles_pass( 3U );
+    ask( "{\"id\":15,\"op\":\"process\"}" );
+    CHECK( has( "a5\",\"inputs\"" ) && has( "a5\"}" ) );    /* last byte of the outputs, and of the inputs */
+    CHECK( has( "\"running\":true" ) && has( "\"wkc\":6" ) && has( "\"expected_wkc\":6" ) &&
+           has( "\"wkc_errors\":0" ) );
+    return;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  A slave leaving OP is counted: the working counter comes back short.
+
+    \return None.
+*/
+static void test_a_slave_leaving_op_is_counted( void )
+{
+    start_scanned();
+    ask( "{\"id\":4,\"op\":\"map\",\"period_us\":1000}" );
+    cycles_pass( 3U );
+    CHECK( ( 2U == helper.snap.wkc ) && ( 0U == helper.snap.wkc_errors ) );  /* SAFE-OP: inputs only, not an error */
+    ask( "{\"id\":5,\"op\":\"state\",\"state\":\"OP\"}" );
+    cycles_pass( 3U );
+    CHECK( ( 6U == helper.snap.wkc ) && ( 0U == helper.snap.wkc_errors ) );
+    ask( "{\"id\":6,\"op\":\"state\",\"slave\":2,\"state\":\"SAFEOP\"}" );
+    cycles_pass( 3U );
+    CHECK( ( 4U == helper.snap.wkc ) && ( 0U != helper.snap.wkc_errors ) );
+    return;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  Writes the process data cannot take are refused; a scan or close ends the map.
+
+    \return None.
+*/
+static void test_process_data_refusals_and_its_end( void )
+{
+    start_scanned();
+    ask( "{\"id\":4,\"op\":\"process\"}" );
+    CHECK( has( "\"error\":\"not_mapped\"" ) );
+    ask( "{\"id\":5,\"op\":\"pdo_write\",\"slave\":1,\"index\":24640,\"sub\":0,\"data\":\"0600\"}" );
+    CHECK( has( "\"error\":\"not_mapped\"" ) );
+
+    ask( "{\"id\":6,\"op\":\"map\"}" );
+    ask( "{\"id\":7,\"op\":\"pdo_write\",\"slave\":1,\"index\":8448,\"sub\":0,\"data\":\"0000\"}" );
+    CHECK( has( "\"error\":\"no_entry\"" ) );       /* 0x2100: in the dictionary, not in the process data */
+    ask( "{\"id\":8,\"op\":\"pdo_write\",\"slave\":1,\"index\":24641,\"sub\":0,\"data\":\"0000\"}" );
+    CHECK( has( "\"error\":\"no_entry\"" ) );       /* 0x6041: an input */
+    ask( "{\"id\":9,\"op\":\"pdo_write\",\"slave\":1,\"index\":24640,\"sub\":0,\"data\":\"06\"}" );
+    CHECK( has( "\"error\":\"bad_request\"" ) );    /* one byte for a 16-bit entry */
+    ask( "{\"id\":10,\"op\":\"pdo_write\",\"slave\":2,\"bit\":4,\"bits\":8,\"data\":\"ff\"}" );
+    CHECK( has( "\"error\":\"no_entry\"" ) );       /* past the slave's 8 output bits */
+    ask( "{\"id\":11,\"op\":\"pdo_write\",\"slave\":3,\"bit\":0,\"bits\":8,\"data\":\"ff\"}" );
+    CHECK( has( "\"error\":\"no_slave\"" ) );
+    ask( "{\"id\":12,\"op\":\"pdo_write\",\"slave\":2,\"bits\":8,\"data\":\"ff\"}" );
+    CHECK( has( "\"error\":\"bad_request\"" ) );
+
+    ask( "{\"id\":13,\"op\":\"scan\"}" );
+    ask( "{\"id\":14,\"op\":\"process\"}" );
+    CHECK( has( "\"error\":\"not_mapped\"" ) );
+    ecat_cycle_snapshot( &helper.snap );
+    CHECK( !helper.snap.running );
+
+    ask( "{\"id\":15,\"op\":\"map\"}" );
+    ask( "{\"id\":16,\"op\":\"close\"}" );
+    ecat_cycle_snapshot( &helper.snap );
+    CHECK( !helper.snap.running );
+    return;
+}
+
 /*!@}*/
 
 /*============================================================================*/
@@ -429,6 +633,11 @@ int main( void )
     test_states_go_a_step_at_a_time();
     test_sdos_read_write_and_abort();
     test_a_line_too_long_is_answered();
+    test_the_map_lays_out_the_process_data();
+    test_outputs_reach_the_slaves_in_op_and_inputs_come_back();
+    test_a_slave_leaving_op_is_counted();
+    test_process_data_refusals_and_its_end();
+    ecat_helper_init( &helper, ecat_port_instance() );     /* stops the last cycle */
 
     ( void )printf( "%u checks, %u failed\n", (unsigned int)checks, (unsigned int)failures );
     return ( 0U == failures ) ? 0 : 1;

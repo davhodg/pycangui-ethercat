@@ -54,9 +54,12 @@ speak, and the hello is not taken.
 | `close` | | |
 | `scan` | | `slaves`: a list of slaves, in full (below). Leaves them in PRE-OP. |
 | `states` | | `slaves`: each slave's `position`, `state`, `error` and `al_status`, read again |
-| `state` | `state`: `INIT`, `PREOP`, `BOOT`, `SAFEOP` or `OP`; `slave` (0 or absent: all); `timeout_ms` (default 2000, up to 60000) | `slaves`, as for `states`, whether it worked or not |
+| `state` | `state`: `INIT`, `PREOP`, `BOOT`, `SAFEOP` or `OP`; `slave` (0 or absent: all); `timeout_ms` (default 2000, up to 60000) | `slaves`, as for `states`, whether it worked or not. `SAFEOP` and `OP` need `map` first. |
 | `sdo_read` | `slave` (1 for the first), `index`, `sub` | `data` |
 | `sdo_write` | `slave`, `index`, `sub`, `data` | |
+| `map` | `period_us` (default 4000, 1000 to 100000) | Maps the process data and starts the cycle (below). `period_us`, `out_len`, `in_len`, `expected_wkc`, `slaves` (states), `areas`, `entries` |
+| `pdo_write` | `slave`, `data`, and either `index` and `sub` (an output in `entries`) or `bit` and `bits` (within the slave's own outputs) | |
+| `process` | | `running`, `period_us`, `cycles`, `wkc`, `expected_wkc`, `wkc_errors`, `late`, `outputs`, `inputs` |
 
 A slave in full:
 
@@ -67,6 +70,28 @@ A slave in full:
 
 `state` is `NONE` for a slave that has not answered. `error` is the error bit of its AL status
 register, set when it refused a state change. `al_status` is its AL status code, which says why.
+
+## Process data
+
+`map` needs every slave in PRE-OP. It lays each slave's process data out one after another, the
+outputs (master to slaves) in one image and the inputs in another, asks the slaves for SAFE-OP,
+and starts the helper's cyclic thread: from then on the outputs go round the ring and the inputs
+come back every `period_us`, whatever else the helper is doing. Then `state` `OP`. A `scan`,
+`open` or `close` stops the cycle and forgets the map; so does the connection closing.
+
+Bits are counted from the first bit of the outputs or of the inputs, a byte's lowest bit first,
+so a value of whole bytes at a whole byte is little-endian, as on the wire. Byte values (`data`,
+`outputs`, `inputs`) are hex, as for SDOs.
+
+- `areas`: each slave's part of the images: `slave`, `out_bit`, `out_bits`, `in_bit`, `in_bits`.
+- `entries`: each object in the process data, from the slaves' PDO assignments (0x1C12 and
+  0x1C13, read by SDO): `slave`, `dir` (`out` or `in`), `index`, `sub`, `bits`, `bit`. A slave
+  without a mailbox has an area but no entries; write to its outputs by `bit` and `bits`.
+- `pdo_write`: `data` is the value, `(bits + 7) / 8` bytes, sent from the next cycle on.
+- `process`: `outputs` as being sent and `inputs` as last taken; `wkc` is the last cycle's working
+  counter, `expected_wkc` what it is when every slave takes part (1 for each that sends inputs, 2
+  for each that takes outputs). `wkc_errors` counts cycles that came back short after it had been
+  reached: a slave dropped out. `late` counts cycles that ended after the next was due.
 
 ## Errors
 
@@ -86,4 +111,7 @@ register, set when it refused a state change. `al_status` is its AL status code,
 | `sdo_abort` | The slave aborted the transfer; `abort` is the abort code |
 | `timeout` | No answer in time (a slave in INIT has no mailbox running) |
 | `state_refused` | A slave did not reach the state asked for; `slaves` says where each got to |
+| `bad_state` | Not every slave is in PRE-OP, which `map` needs |
+| `not_mapped` | SAFE-OP, OP, `pdo_write` and `process` need `map` first |
+| `no_entry` | `pdo_write` named no output in the process data |
 | `failed` | Anything else the master reported |

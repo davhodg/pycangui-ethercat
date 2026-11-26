@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 davhodg
-"""The EtherCAT pane: choose an adapter, scan the ring, set states, read and write objects.
+"""The EtherCAT pane: choose an adapter, scan the ring, set states, read and write
+objects, and run the process data.
 
-The first stage: no process data yet, so no slave stays in OP for long -- OP
-needs outputs every cycle, which comes with the cyclic thread.
-Everything here is a request to the helper and its answer; nothing is polled.
+Everything here is a request to the helper and its answer. The one thing asked
+again and again is the process data, while it runs and the pane is shown: a
+few times a second, never a request before the last came back. The helper's
+own thread sends it round the ring every cycle; the pane only looks.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -33,6 +36,9 @@ from .ring import Ring
 #: The states, as the helper names them, and as the buttons say them.
 STATES = (("INIT", "Init"), ("PREOP", "Pre-Op"), ("SAFEOP", "Safe-Op"), ("OP", "Op"))
 COLUMNS = ("Position", "Name", "Vendor", "Product", "State", "AL status")
+PDO_COLUMNS = ("Slave", "Direction", "Object", "Bits", "Value")
+#: How often the process data is asked for while it runs and the pane is shown.
+PROCESS_MS = 100
 
 #: What the protocol's error codes mean, to somebody looking at the pane.
 ERRORS = {
@@ -51,6 +57,9 @@ ERRORS = {
     "timeout": "No answer in time. A slave in Init has no mailbox running: put it in Pre-Op.",
     "too_long": "The value is too long.",
     "state_refused": "The slave did not take that state: see its AL status.",
+    "not_mapped": "Start the process data first: Safe-Op and Op need it.",
+    "bad_state": "Every slave must be in Pre-Op to start the process data: scan again.",
+    "no_entry": "That is not an output in the process data.",
     "bad_request": "The request was not one the helper takes.",
     "failed": "The master reported an error.",
 }
@@ -166,6 +175,44 @@ def parse_bytes(text: str) -> bytes | None:
         return None
 
 
+def pdo_rows(mapped: dict) -> list[dict]:
+    """The process data's rows: each object the map listed, then each slave's part it listed nothing for.
+
+    A row has ``slave``, ``dir`` ("out" or "in"), ``bit`` (from the start of
+    the outputs or the inputs) and ``bits``; ``index`` and ``sub`` for an
+    object, or ``rel``, the bit within the slave's own part, for a slave with
+    no mailbox to read its PDO assignment through.
+    """
+    rows = [dict(entry) for entry in mapped.get("entries", [])]
+    listed = {(row["slave"], row["dir"]) for row in rows}
+    for area in mapped.get("areas", []):
+        for way in ("out", "in"):
+            bits = area[f"{way}_bits"]
+            if bits and (area["slave"], way) not in listed:
+                rows.append(
+                    {"slave": area["slave"], "dir": way, "bit": area[f"{way}_bit"], "bits": bits, "rel": 0}
+                )
+    return sorted(rows, key=lambda row: (row["slave"], row["dir"] != "out", row["bit"]))
+
+
+def value_at(image: bytes, bit: int, bits: int) -> int:
+    """The bits of an image, EtherCAT's way: lowest bit first, little-endian."""
+    return (int.from_bytes(image, "little") >> bit) & ((1 << bits) - 1)
+
+
+def parse_value(text: str, bits: int) -> int | None:
+    """A value typed for ``bits`` bits, hex or decimal, negative as two's complement; None if it won't fit."""
+    try:
+        value = int(text.strip(), 0)
+    except ValueError:
+        return None
+    if value < 0:
+        value += 1 << bits
+        if value < 1 << (bits - 1):
+            return None
+    return value if 0 <= value < 1 << bits else None
+
+
 def show_value(data: bytes) -> str:
     """A value as the slave sent it: the bytes, and what they are as a little-endian number."""
     shown = data.hex(" ").upper()
@@ -186,6 +233,13 @@ class EthercatView(QWidget):
         self.slaves: dict[int, dict] = {}
         #: The adapter open in the helper, by name; None when none is.
         self.opened: str | None = None
+        #: The map's answer while the process data runs; None when it does not.
+        self.mapped: dict | None = None
+        #: The process data's rows (``pdo_rows``), as the table shows them.
+        self.rows: list[dict] = []
+        #: The last ``process`` answer: counters, outputs and inputs.
+        self.process: dict | None = None
+        self._asking = False
 
         self.status = QLabel("Starting the helper...")
         self.status.setWordWrap(True)
@@ -247,6 +301,49 @@ class EthercatView(QWidget):
         self.result.setWordWrap(True)
         self.result.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
+        self.period = QSpinBox()
+        self.period.setRange(1, 100)
+        self.period.setValue(4)
+        self.period.setSuffix(" ms")
+        self.period.setToolTip(
+            "How often the process data goes round the ring. A few milliseconds suits\n"
+            "profile position and velocity; this is not a motion controller."
+        )
+        self.map_button = QPushButton("Start")
+        self.map_button.setToolTip(
+            "Map every slave's process data and send it every cycle. The slaves must be\n"
+            "in Pre-Op, and are in Safe-Op after: then Op. Scan again to stop."
+        )
+        self.map_button.clicked.connect(self.start_process)
+        self.counters = QLabel()
+        self.counters.setToolTip(
+            "Working counter: what came back against what should, when every slave takes part.\n"
+            "Errors: cycles it came back short after it had been reached -- a slave dropped out.\n"
+            "Late: cycles that ended after the next was due."
+        )
+        self.pdo_table = QTableWidget(0, len(PDO_COLUMNS))
+        self.pdo_table.setHorizontalHeaderLabels(PDO_COLUMNS)
+        self.pdo_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.pdo_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.pdo_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.pdo_table.verticalHeader().hide()
+        self.pdo_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.pdo_table.horizontalHeader().setStretchLastSection(True)
+        self.pdo_table.itemSelectionChanged.connect(self._enable)
+        self.output_value = QLineEdit()
+        self.output_value.setPlaceholderText("0x0F")
+        self.output_value.setToolTip(
+            "The value for the chosen output, hex (0x...) or decimal; negative allowed."
+        )
+        self.set_button = QPushButton("Set")
+        self.set_button.setToolTip("Send the value in the chosen output from the next cycle on.")
+        self.set_button.clicked.connect(self.set_output)
+        self.process_result = QLabel()
+        self.process_result.setWordWrap(True)
+        self._timer = QTimer(self)
+        self._timer.setInterval(PROCESS_MS)
+        self._timer.timeout.connect(self._ask_process)
+
         top = QHBoxLayout()
         top.addWidget(QLabel("Adapter"))
         top.addWidget(self.adapters, 1)
@@ -273,6 +370,22 @@ class EthercatView(QWidget):
         grid.addWidget(self.write_button, 1, 4)
         grid.addWidget(self.result, 2, 0, 1, 5)
 
+        pdo = QGroupBox("Process data")
+        pdo_layout = QVBoxLayout(pdo)
+        pdo_top = QHBoxLayout()
+        pdo_top.addWidget(QLabel("Cycle"))
+        pdo_top.addWidget(self.period)
+        pdo_top.addWidget(self.map_button)
+        pdo_top.addWidget(self.counters, 1)
+        pdo_layout.addLayout(pdo_top)
+        pdo_layout.addWidget(self.pdo_table, 1)
+        pdo_set = QHBoxLayout()
+        pdo_set.addWidget(QLabel("Value"))
+        pdo_set.addWidget(self.output_value, 1)
+        pdo_set.addWidget(self.set_button)
+        pdo_layout.addLayout(pdo_set)
+        pdo_layout.addWidget(self.process_result)
+
         status_row = QHBoxLayout()
         status_row.addWidget(self.status, 1)
         status_row.addWidget(self.restart)
@@ -283,6 +396,7 @@ class EthercatView(QWidget):
         layout.addLayout(ring_row)
         layout.addWidget(self.table, 1)
         layout.addWidget(sdo)
+        layout.addWidget(pdo, 1)
 
         ring.connected.connect(self._connected)
         ring.failed.connect(self._failed)
@@ -301,6 +415,7 @@ class EthercatView(QWidget):
 
     def _failed(self, code: str) -> None:
         self.opened = None
+        self._unmapped()
         self.status.setText(ERRORS.get(code, code))
         self.restart.show()
         self._enable()
@@ -328,6 +443,10 @@ class EthercatView(QWidget):
             button.setEnabled(is_open and bool(self.slaves))
         self.read_button.setEnabled(chosen)
         self.write_button.setEnabled(chosen)
+        self.period.setEnabled(is_open and bool(self.slaves) and self.mapped is None)
+        self.map_button.setEnabled(is_open and bool(self.slaves) and self.mapped is None)
+        output = self.chosen_row()
+        self.set_button.setEnabled(self.mapped is not None and output is not None and output["dir"] == "out")
 
     # --- adapters -------------------------------------------------------------------------
     def list_adapters(self) -> None:
@@ -368,6 +487,7 @@ class EthercatView(QWidget):
         self.opened = None
         self.slaves = {}
         self._show_slaves()
+        self._unmapped()
         self.status.setText(error_text(error) if error is not None else "Closed.")
         self._enable()
 
@@ -377,6 +497,7 @@ class EthercatView(QWidget):
         self.ring.call("scan", self._scanned)
 
     def _scanned(self, answer, error) -> None:
+        self._unmapped()  # a scan ends the process data in the helper
         if error is not None:
             self.slaves = {}
             self._show_slaves()
@@ -489,3 +610,110 @@ class EthercatView(QWidget):
             self.result.setText(f"{where}: {error_text(error)}")
         else:
             self.result.setText(f"{where} written: {data.hex(' ').upper()}")
+
+    # --- process data ---------------------------------------------------------------------
+    def start_process(self) -> None:
+        self.ring.call("map", self._mapped, period_us=self.period.value() * 1000)
+
+    def _mapped(self, answer, error) -> None:
+        if error is not None:
+            self.process_result.setText(error_text(error))
+            self._enable()
+            return
+        self.mapped = answer
+        self.rows = pdo_rows(answer)
+        self.process = None
+        self._states(answer, None)
+        self._show_rows()
+        self.process_result.setText("")
+        self._timer.start()
+        self._ask_process()
+
+    def _unmapped(self) -> None:
+        self._timer.stop()
+        self.mapped = None
+        self.rows = []
+        self.process = None
+        self._show_rows()
+        self.counters.setText("")
+
+    def _ask_process(self) -> None:
+        # Only while it runs and somebody can see it, and one request at a time:
+        # an SDO on the same connection may take a while.
+        if self.mapped is None or self._asking or not self.isVisible():
+            return
+        self._asking = True
+        self.ring.call("process", self._processed)
+
+    def _processed(self, answer, error) -> None:
+        self._asking = False
+        if self.mapped is None:
+            return
+        if error is not None:
+            self.counters.setText(error_text(error))
+            return
+        self.process = answer
+        self.counters.setText(
+            f"Working counter {answer['wkc']}/{answer['expected_wkc']}, errors {answer['wkc_errors']}, "
+            f"late {answer['late']}, cycles {answer['cycles']}"
+        )
+        self._show_values()
+
+    def chosen_row(self) -> dict | None:
+        """The process data row chosen in its table."""
+        model = self.pdo_table.selectionModel()
+        rows = model.selectedRows() if model else []
+        return self.rows[rows[0].row()] if rows and rows[0].row() < len(self.rows) else None
+
+    def value_of(self, row: dict) -> int | None:
+        """A row's value, from the outputs being sent or the inputs last taken."""
+        if self.process is None:
+            return None
+        image = bytes.fromhex(self.process["outputs" if row["dir"] == "out" else "inputs"])
+        return value_at(image, row["bit"], row["bits"])
+
+    def set_output(self) -> None:
+        row = self.chosen_row()
+        if row is None or row["dir"] != "out":
+            return
+        value = parse_value(self.output_value.text(), row["bits"])
+        if value is None:
+            self.process_result.setText(f"Give a value that fits {row['bits']} bits.")
+            return
+        data = value.to_bytes((row["bits"] + 7) // 8, "little").hex()
+        if "index" in row:
+            where = {"index": row["index"], "sub": row["sub"]}
+        else:
+            where = {"bit": row["rel"], "bits": row["bits"]}
+        self.ring.call("pdo_write", self._output_set, slave=row["slave"], data=data, **where)
+
+    def _output_set(self, _answer, error) -> None:
+        self.process_result.setText(error_text(error) if error is not None else "")
+        if error is None:
+            self._ask_process()
+
+    def _show_rows(self) -> None:
+        self.pdo_table.setRowCount(len(self.rows))
+        for number, row in enumerate(self.rows):
+            if "index" in row:
+                name = f"0x{row['index']:04X}:{row['sub']}"
+            else:
+                name = f"bits {row['rel']} to {row['rel'] + row['bits'] - 1}"
+            cells = (
+                str(row["slave"]),
+                "Output" if row["dir"] == "out" else "Input",
+                name,
+                str(row["bits"]),
+                "",
+            )
+            for column, text in enumerate(cells):
+                self.pdo_table.setItem(number, column, QTableWidgetItem(text))
+        self._enable()
+
+    def _show_values(self) -> None:
+        for number, row in enumerate(self.rows):
+            value = self.value_of(row)
+            digits = (row["bits"] + 3) // 4
+            text = "" if value is None else f"0x{value:0{digits}X}  =  {value}"
+            if (item := self.pdo_table.item(number, 4)) is not None:
+                item.setText(text)

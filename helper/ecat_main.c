@@ -61,6 +61,7 @@ typedef ssize_t sock_io_t;                          /*!< What recv() and send() 
 #define SOCK_IO_LEN( n )    ( n )                   /*!< A length as recv() and send() take it */
 #endif /* #if defined( _WIN32 ) */
 
+#include "ecat_cycle.h"
 #include "ecat_helper.h"
 #include "ecat_json.h"
 #include "ecat_port.h"
@@ -170,6 +171,7 @@ int main( void )
         ( void )fprintf( stderr, "could not start networking\n" );
     }
 
+    ecat_cycle_stop();      /* before the ring it cycles is closed */
     ecat_port_close( ecat_port_instance() );
     return code;
 }

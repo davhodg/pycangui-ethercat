@@ -42,6 +42,7 @@
 #define ECAT_PORT_SLAVE_NAME_LEN ( 41U )    /*!< Longest slave name, with its terminator (SOEM's EC_MAXNAME + 1) */
 #define ECAT_PORT_MAX_ADAPTERS  ( 32U )     /*!< Most adapters listed */
 #define ECAT_PORT_MAX_SLAVES    ( 200U )    /*!< Most slaves on the ring (SOEM's EC_MAXSLAVE) */
+#define ECAT_PORT_IMAGE_LEN     ( 4096U )   /*!< Most bytes of outputs, and of inputs, the ring may map */
 
 #define ECAT_PORT_STATE_INIT    ( 0x01U )   /*!< EtherCAT state INIT */
 #define ECAT_PORT_STATE_PREOP   ( 0x02U )   /*!< EtherCAT state PRE-OP */
@@ -72,8 +73,26 @@ typedef enum
     ECAT_PORT_STS_TIMEOUT,          /*!< No answer in time */
     ECAT_PORT_STS_TOO_LONG,         /*!< The value does not fit the buffer */
     ECAT_PORT_STS_STATE_REFUSED,    /*!< The slave did not reach the state asked for */
+    ECAT_PORT_STS_BAD_STATE,        /*!< Not every slave is in the state this needs: PRE-OP, to map */
     ECAT_PORT_STS_FAILED            /*!< Anything else the master reported */
 } ecat_port_sts_t;
+
+/*! The size of the process image, once mapped. */
+typedef struct
+{
+    size_t   out_len;               /*!< Bytes of outputs: master to slaves */
+    size_t   in_len;                /*!< Bytes of inputs: slaves to master */
+    uint16_t expected_wkc;          /*!< The working counter a cycle comes back with when every slave took part */
+} ECAT_PORT_IMAGE_T;
+
+/*! Where one slave's process data is in the image: bits, counted from the first bit of each part. */
+typedef struct
+{
+    uint32_t out_bit;               /*!< Its first output bit */
+    uint32_t out_bits;              /*!< How many output bits; 0 for none */
+    uint32_t in_bit;                /*!< Its first input bit */
+    uint32_t in_bits;               /*!< How many input bits; 0 for none */
+} ECAT_PORT_AREA_T;
 
 /*! One network adapter the master could open. */
 typedef struct
@@ -264,6 +283,56 @@ ecat_port_sts_t ecat_port_sdo_write( ECAT_PORT_CTX_T* const ctx_p,
                                      uint8_t const data[],
                                      size_t const len,
                                      uint32_t* const abort_p );
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  Map every slave's process data into one image, and ask for SAFE-OP.
+
+    Every slave must be in PRE-OP. Each slave's process data is placed one
+    after another, outputs in one part and inputs in another; the slaves are
+    then asked for SAFE-OP, as SOEM's mapping does. Called on the protocol
+    thread, with no cycle running.
+
+    \param  ctx_p   The master.
+    \param  image_p The image's size.
+
+    \return ECAT_PORT_STS_OK; ECAT_PORT_STS_NOT_OPEN, _NO_SLAVES or _BAD_STATE;
+            or ECAT_PORT_STS_TOO_LONG for more than ECAT_PORT_IMAGE_LEN bytes.
+*/
+ecat_port_sts_t ecat_port_map( ECAT_PORT_CTX_T* const ctx_p, ECAT_PORT_IMAGE_T* const image_p );
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  Where one slave's process data is in the image the last map made.
+
+    \param  ctx_p       The master.
+    \param  position    1 for the first slave.
+    \param  area_p      Filled in.
+
+    \return ECAT_PORT_STS_OK or ECAT_PORT_STS_NO_SLAVE.
+*/
+ecat_port_sts_t ecat_port_area( ECAT_PORT_CTX_T* const ctx_p,
+                                uint16_t const position,
+                                ECAT_PORT_AREA_T* const area_p );
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  One cycle: send the outputs round the ring and take back the inputs.
+
+    Called on the cycle thread while the protocol thread goes on with SDOs and
+    states: an implementation keeps the two apart where they share anything.
+
+    \param  ctx_p   The master.
+    \param  outputs The outputs, as long as the map made them.
+    \param  inputs  Filled with the inputs, as long as the map made them.
+    \param  wkc_p   The working counter the frame came back with; 0 when none came.
+
+    \return None.
+*/
+void ecat_port_exchange( ECAT_PORT_CTX_T* const ctx_p,
+                         uint8_t const outputs[],
+                         uint8_t inputs[],
+                         uint16_t* const wkc_p );
 
 /*!@}*/
 
