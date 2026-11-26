@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+# The build, and the helpers it copies into the plugin: built, never committed.
+build/out/
+ethercat/bin/

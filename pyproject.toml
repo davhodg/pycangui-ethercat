@@ -1,0 +1,20 @@
+# Settings for the tools only: the plugin is not a Python package to install,
+# it is a folder pycangui loads (see README.md).
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["external"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "N", "RUF"]
+ignore = [
+    "N802",   # Qt overrides must be camelCase (rowCount, closeEvent, ...)
+    "B008",   # QModelIndex() as a default argument is the standard Qt signature
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ethercat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

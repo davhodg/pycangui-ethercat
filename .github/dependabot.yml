@@ -1,0 +1,14 @@
+# Version updates. Security updates are switched on in the repository settings
+# and need nothing here.
+version: 2
+updates:
+  # The actions in .github/workflows, which move to new runtimes on GitHub's
+  # timetable rather than ours. Not pip: the only requirement worth following
+  # is pycangui, a git link that Dependabot cannot move.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

@@ -1,0 +1,20 @@
+pycangui-ethercat
+Copyright (C) 2026 davhodg
+Licensed under the GNU General Public License, version 3 or later (see LICENSE).
+
+The helper program (bin/ecat_helper) is built with:
+
+SOEM (Simple Open EtherCAT Master), release 2.0.1
+  https://github.com/OpenEtherCATsociety/SOEM
+  Copyright (C) 2005-2025 Speciaal Machinefabriek Ketels v.o.f.
+  Copyright (C) 2009-2025 RT-Labs AB, Sweden
+  Licensed under the GNU General Public License, version 3 (or a commercial licence from
+  RT-Labs, which this project does not use). Its source is in external/SOEM, at the tag
+  the helper is built from.
+
+On Windows, frames are sent through Npcap (https://npcap.com), which each user installs;
+it is not distributed with this plugin.
+
+EtherCAT(R) is a registered trademark and patented technology, licensed by Beckhoff
+Automation GmbH, Germany. This project is not affiliated with Beckhoff or the EtherCAT
+Technology Group.

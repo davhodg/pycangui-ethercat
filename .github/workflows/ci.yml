@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}, Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.14"]
+        include:
+          - os: ubuntu-latest
+            python: "3.12"
+    steps:
+      # SOEM is a submodule, pinned to the release the helper is built against.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+
+      # Both helpers -- over SOEM, and over the scripted ring the tests use --
+      # and the C tests. MSVC on Windows (found with vswhere), gcc on Linux,
+      # each with its warnings as errors.
+      - name: Build the helper and run the C tests
+        run: python build/build.py
+
+      # Qt needs a display. The tests ask for the offscreen platform, but
+      # Linux runners also lack the X libraries Qt links against.
+      - name: Install Qt's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q -n auto

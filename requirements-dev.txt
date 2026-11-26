@@ -1,0 +1,8 @@
+# pycangui from master until a release has plugin API 3 (0.6.2 does not).
+pycangui @ git+https://github.com/davhodg/pycangui@master
+pytest
+pytest-xdist
+ruff
+# Building the helper: python build/build.py
+cmake>=3.28
+ninja
