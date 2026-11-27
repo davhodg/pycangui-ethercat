@@ -9,8 +9,8 @@ happen, and which version of the plugin and of pycangui you were running.
 
 One that is in pycangui rather than in this plugin goes to
 [pycangui's security policy](https://github.com/davhodg/pycangui/security/policy), whose
-rules apply here too: no promised response time, every report read and answered, and the
-fix and the advisory published together.
+rules apply here too: every report read and answered as soon as possible, and the fix and
+the advisory published together.
 
 ## Versions that get fixes
 
