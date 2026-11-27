@@ -68,6 +68,16 @@ Both go into `ethercat/bin`. On Windows it uses MSVC, found with vswhere.
 The C follows the project's C coding standard: fixed-width types, state in a context, no
 allocation, MISRA C:2023 deviations noted where they are made.
 
+## Safety notice
+
+This plugin puts slaves into Op and runs their process data, which sets outputs and drives
+acting. pycangui's [safety notice](https://github.com/davhodg/pycangui#safety-notice) applies:
+know what every slave on the ring will do before you start it, and keep a way to stop the
+equipment within reach.
+
+If you find the plugin doing something unsafe -- writing to a slave without being asked, or not
+stopping what it says it stopped -- open an issue.
+
 ## Licence
 
 GPL-3.0-or-later: see [LICENSE](LICENSE) and [NOTICE](NOTICE). The helper links SOEM, which is
