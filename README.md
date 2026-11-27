@@ -10,8 +10,10 @@ steady 1 ms cycle that cyclic synchronous modes and distributed clocks need.
 
 **Early work.** What there is now: choose an adapter, scan, set states, read and write objects,
 and run the process data -- mapped from the slaves' PDO assignments, sent every few milliseconds
-by the helper's own thread, its values shown live and its outputs set by hand. The object
-dictionary from the slave, and driving a CiA 402 drive, come next.
+by the helper's own thread, its values shown live and its outputs set by hand. Each slave a scan
+finds is also a device in pycangui's device lists, its process data read and written through the
+cycle and the rest of its objects by SDO, ready for the CiA 402 plugin to drive. The object
+dictionary from the slave comes next.
 
 ## How it is made
 
@@ -55,7 +57,8 @@ Both go into `ethercat/bin`. On Windows it uses MSVC, found with vswhere.
   no socket. `ecat_port.h` is everything the helper asks of the ring, with
   `ecat_port_soem.c` and `ecat_port_fake.c` behind it.
 - `tests_c/`: the protocol against the scripted ring.
-- `ethercat/`: the plugin, as pycangui loads it.
+- `ethercat/`: the plugin, as pycangui loads it: `pane.py` the pane, `ring.py` the helper and
+  what its answers said about the ring, `devices.py` each slave as a pycangui device.
 - `tests/`: the helper as a running program, and the plugin in a pycangui window, both over
   the scripted ring.
 

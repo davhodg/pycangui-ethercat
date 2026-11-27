@@ -5,7 +5,8 @@
 The ring is worked by a helper program (bin/ecat_helper), written in C over
 SOEM, which owns the network card; this plugin is the pane, and talks to the
 helper over a local socket. pycangui runs the helper for it (``app.helper``),
-so a helper never outlives the window or the plugin.
+so a helper never outlives the window or the plugin. Each slave is also a
+pycangui device, so a pane written for devices drives it (``devices.py``).
 
 A commissioning and diagnostic tool, not a motion controller: frames go out
 through Npcap on Windows, which does not hold the steady 1 ms cycle that
@@ -14,6 +15,7 @@ cyclic synchronous modes need.
 
 from __future__ import annotations
 
+from .devices import EthercatProvider
 from .pane import EthercatView
 from .ring import Ring
 
@@ -26,6 +28,8 @@ DESCRIPTION = "Scan an EtherCAT ring, set slave states, and read and write objec
 def register(app) -> None:
     ring = Ring(app)
     pane = f"{app.plugin}:main"
+    # Each slave a scan finds is a device in pycangui's lists, for the CiA 402 pane.
+    app.add_device_provider(EthercatProvider(ring, app.plugin))
 
     def build(_name: str) -> EthercatView:
         return EthercatView(ring)

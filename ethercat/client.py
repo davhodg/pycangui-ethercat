@@ -44,15 +44,26 @@ class HelperError(Exception):
 
 
 class Client:
-    """A connection to the helper. Not thread-safe: used from one worker."""
+    """A connection to the helper.
+
+    Used from the ring's worker, and now and then from the GUI thread: a drive
+    stopped as the window closes is written to there and then, while the
+    worker may be half way through a request of its own. A request waits for
+    the one before it to be answered.
+    """
 
     def __init__(self, port: int, host: str = "127.0.0.1") -> None:
         self._sock = socket.create_connection((host, port), timeout=TIMEOUT_S)
         self._lines = self._sock.makefile("rb")
         self._next = 0
+        self._lock = threading.Lock()
 
     def request(self, op: str, **fields: Any) -> dict:
         """Send one request and return its answer; HelperError if it was not ok."""
+        with self._lock:
+            return self._request(op, fields)
+
+    def _request(self, op: str, fields: dict) -> dict:
         self._next += 1
         ident = self._next
         line = json.dumps({"id": ident, "op": op, **fields}, separators=(",", ":")) + "\n"

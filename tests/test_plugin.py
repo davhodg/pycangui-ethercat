@@ -224,3 +224,106 @@ def test_unloading_the_plugin_stops_the_helper(app, window, view):
     assert helper.running
     window.plugins.unload("ethercat")
     assert wait_for(app, lambda: not helper.running)
+
+
+# --- each slave as a pycangui device -----------------------------------------------------
+def on_device(app, device, job):
+    """Run ``job`` where the device's reads and writes go, and wait for it."""
+    told = []
+    device.background(job, lambda result, error: told.append((result, error)))
+    assert wait_for(app, lambda: told)
+    return told[0]
+
+
+def drive(window):
+    return window.devices.device(("ethercat", 1))
+
+
+def test_a_scan_puts_each_slave_in_pycanguis_device_list(app, window, view):
+    assert [d for d in window.devices.devices() if isinstance(d.key, tuple)] == []
+    opened_and_scanned(app, view)
+    devices = [d for d in window.devices.devices() if isinstance(d.key, tuple)]
+    assert [d.key for d in devices] == [("ethercat", 1), ("ethercat", 2)]
+    assert all(d.available() for d in devices)
+    assert devices[0].state() == ("PREOP", False)
+    assert devices[0].states == () and devices[0].receives() == []
+
+
+def test_a_drive_is_enabled_through_its_device_by_the_process_data(app, window, view):
+    started(app, view)
+    view.all_slaves.setChecked(True)
+    view.set_state("OP")
+    assert wait_for(app, lambda: view.slaves[2]["state"] == "OP")
+    device = drive(window)
+    assert device.has(0x6040) and device.has(0x2100) is None, "only the process data is known"
+
+    def enable():
+        seen = []
+        for control in (0x06, 0x07, 0x0F):
+            device.write(0x6040, 0, control.to_bytes(2, "little"))
+            for _ in range(200):
+                status = int.from_bytes(device.read(0x6041, 0), "little")
+                if status & 0x6F == {0x06: 0x21, 0x07: 0x23, 0x0F: 0x27}[control]:
+                    break
+            seen.append(status & 0x6F)
+        return seen
+
+    assert on_device(app, device, enable) == ([0x21, 0x23, 0x27], None)
+    assert wait_for(app, lambda: view.process and view.value_of(choose(view, 1, "out", 0x6040)) == 0x0F)
+
+
+def test_an_object_outside_the_process_data_goes_by_sdo(app, window, view):
+    opened_and_scanned(app, view)
+    device = drive(window)
+
+    def round_trip():
+        device.write(0x2100, 0, b"\x34\x12")
+        return device.read(0x2100, 0)
+
+    assert on_device(app, device, round_trip) == (b"\x34\x12", None)
+
+
+def test_a_write_from_the_gui_thread_waits_for_the_workers_request(app, window, view):
+    """As the CiA 402 pane's stop does when the window closes, while the pane polls."""
+    started(app, view)
+    device = drive(window)
+    for value in range(1, 30):
+        device.write(0x6060, 0, bytes([value]))
+        app.processEvents()
+    assert int.from_bytes(device.read(0x6060, 0), "little") == 29
+
+
+def test_a_scan_says_leaving_first_and_the_same_slave_keeps_its_device(app, window, view):
+    started(app, view)
+    device = drive(window)
+    said = []
+    device.leaving.connect(lambda: said.append(device.available() and view.mapped is not None))
+    view.scan()
+    assert wait_for(app, lambda: view.mapped is None and view.table.rowCount() == 2)
+    assert said == [True], "while the process data still ran"
+    assert drive(window) is device and device.available()
+
+
+def test_stop_and_close_say_leaving_once_and_close_takes_the_devices_away(app, window, view):
+    started(app, view)
+    device = drive(window)
+    said = []
+    device.leaving.connect(lambda: said.append(device.available()))
+    view._start_or_stop()
+    assert wait_for(app, lambda: view.mapped is None)
+    assert said == [True]
+    view._open_or_close()
+    assert wait_for(app, lambda: view.opened is None)
+    assert said == [True, True]
+    assert drive(window) is None and device.state() == (None, True)
+
+
+def test_unloading_the_plugin_says_leaving_once(app, window, view):
+    opened_and_scanned(app, view)
+    device = drive(window)
+    said = []
+    device.leaving.connect(lambda: said.append(device.available()))
+    window.plugins.unload("ethercat")
+    app.processEvents()
+    assert said == [True], "by pycangui as the provider went, and not again as the ring stopped"
+    assert drive(window) is None
