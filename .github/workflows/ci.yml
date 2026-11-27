@@ -31,6 +31,13 @@ jobs:
         with:
           submodules: true
 
+      # The CiA 402 plugin, for the tests that drive the scripted ring's drive
+      # through it (tests/test_with_cia402.py).
+      - uses: actions/checkout@v7
+        with:
+          repository: davhodg/pycangui-cia402
+          path: external/pycangui-cia402
+
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
@@ -62,4 +69,5 @@ jobs:
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
+          PYCANGUI_CIA402: external/pycangui-cia402
         run: python -m pytest -q -n auto

@@ -258,17 +258,13 @@ def test_a_drive_is_enabled_through_its_device_by_the_process_data(app, window, 
     assert device.has(0x6040) and device.has(0x2100) is None, "only the process data is known"
 
     def enable():
-        seen = []
+        # One after another, with nothing read between, as the CiA 402 pane
+        # writes them: each has to have reached the drive before the next.
         for control in (0x06, 0x07, 0x0F):
             device.write(0x6040, 0, control.to_bytes(2, "little"))
-            for _ in range(200):
-                status = int.from_bytes(device.read(0x6041, 0), "little")
-                if status & 0x6F == {0x06: 0x21, 0x07: 0x23, 0x0F: 0x27}[control]:
-                    break
-            seen.append(status & 0x6F)
-        return seen
+        return int.from_bytes(device.read(0x6041, 0), "little") & 0x6F
 
-    assert on_device(app, device, enable) == ([0x21, 0x23, 0x27], None)
+    assert on_device(app, device, enable) == (0x27, None)
     assert wait_for(app, lambda: view.process and view.value_of(choose(view, 1, "out", 0x6040)) == 0x0F)
 
 

@@ -15,6 +15,7 @@ targets, which are what a drive is worked by, are what drives map.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Hashable
 from typing import Any
 
@@ -23,6 +24,16 @@ from PySide6.QtCore import QObject, Signal
 from .client import HelperError
 from .pane import value_at
 from .ring import Ring
+
+#: Cycles a written output goes round before the write returns: the one under
+#: way may have been sent already, and the next is the one the slave acts on.
+#: A write by SDO returns once the slave has taken it, and a pane writing
+#: controlwords one after another -- the walk to Operation enabled -- counts
+#: on that: written to the outputs and returned at once, only the last of
+#: them would reach the drive, which refuses it from where it was.
+SETTLE_CYCLES = 2
+#: Long enough for SETTLE_CYCLES of the slowest period the helper takes.
+SETTLE_TIMEOUT_S = 1.0
 
 
 class EthercatDevice(QObject):
@@ -75,8 +86,22 @@ class EthercatDevice(QObject):
             if len(data) != (entry["bits"] + 7) // 8:
                 raise HelperError("bad_request")
             self.ring.request("pdo_write", slave=self.position, index=index, sub=sub, data=bytes(data).hex())
+            self._settle()
         else:
             self.ring.request("sdo_write", slave=self.position, index=index, sub=sub, data=bytes(data).hex())
+
+    def _settle(self) -> None:
+        """Wait until the outputs as written have gone round the ring, as an
+        SDO write waits for the slave to take it."""
+        process = self.ring.request("process")
+        until = process["cycles"] + SETTLE_CYCLES
+        pause = max(process["period_us"] / 2e6, 0.0005)
+        end = time.monotonic() + SETTLE_TIMEOUT_S
+        while process["running"] and process["cycles"] < until:
+            if time.monotonic() > end:
+                raise HelperError("timeout")
+            time.sleep(pause)
+            process = self.ring.request("process")
 
     def has(self, index: int, sub: int = 0) -> bool | None:
         # Only the process data is known; the rest of the dictionary is not read yet.

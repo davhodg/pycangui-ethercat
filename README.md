@@ -61,6 +61,9 @@ Both go into `ethercat/bin`. On Windows it uses MSVC, found with vswhere.
   what its answers said about the ring, `devices.py` each slave as a pycangui device.
 - `tests/`: the helper as a running program, and the plugin in a pycangui window, both over
   the scripted ring.
+  `test_with_cia402.py` drives the scripted drive from the CiA 402 plugin, which it takes
+  from a [pycangui-cia402](https://github.com/davhodg/pycangui-cia402) checkout beside this
+  one (or `PYCANGUI_CIA402`), and skips without one.
 
 The C follows the project's C coding standard: fixed-width types, state in a context, no
 allocation, MISRA C:2023 deviations noted where they are made.
