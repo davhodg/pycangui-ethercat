@@ -7,3 +7,5 @@ dist/
 # The build, and the helpers it copies into the plugin: built, never committed.
 build/out/
 ethercat/bin/
+# Working notes, kept local.
+private/
