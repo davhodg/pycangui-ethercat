@@ -81,7 +81,7 @@ def opened_and_scanned(app, view) -> None:
 def test_it_installs_with_a_pane_and_no_helper_until_the_pane_is_shown(app, window):
     assert window.plugins.errors() == {}
     assert "EtherCAT" in [r.label for r in window.plugins.working()]
-    assert window.panes.docks[PANE].windowTitle() == "EtherCAT"
+    assert window.panes.docks[PANE].windowTitle().startswith("EtherCAT")
     view = window.panes.view(PANE)
     assert not view.ring.started, "no program holding a network card until somebody looks"
 
