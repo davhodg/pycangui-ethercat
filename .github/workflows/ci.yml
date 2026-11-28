@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -23,7 +24,9 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python: ["3.14"]
         include:
-          - os: ubuntu-latest
+          # The oldest Linux runner, so the helper a release takes from it runs
+          # on any glibc from 2.35 on.
+          - os: ubuntu-22.04
             python: "3.12"
     steps:
       # SOEM is a submodule, pinned to the release the helper is built against.
@@ -71,3 +74,51 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           PYCANGUI_CIA402: external/pycangui-cia402
         run: python -m pytest -q -n auto
+
+      # On a tag, the helper this job built and tested goes into the release:
+      # Windows from here, Linux from the oldest runner.
+      - name: Keep the helper for the release
+        if: startsWith(github.ref, 'refs/tags/v') && (matrix.os == 'windows-latest' || matrix.os == 'ubuntu-22.04')
+        uses: actions/upload-artifact@v7
+        with:
+          name: helper-${{ runner.os }}
+          path: |
+            ethercat/bin/ecat_helper
+            ethercat/bin/ecat_helper.exe
+          if-no-files-found: error
+
+  # A tag v<VERSION> makes a GitHub release with the zip pycangui installs,
+  # both helpers in it. plugins.json is then written from that zip
+  # (build/pack.py --list) and committed.
+  release:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: helper-*
+          path: ethercat/bin
+          merge-multiple: true
+
+      - name: Pack
+        run: python build/pack.py "${{ github.ref_name }}"
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.zip
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

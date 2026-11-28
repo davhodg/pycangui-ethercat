@@ -10,6 +10,10 @@
 cmake_minimum_required(VERSION 3.28)
 project(pycangui_ethercat LANGUAGES C)
 
+# The C runtime linked in (/MT), on SOEM too: the helper then runs on a computer
+# without the Visual C++ Redistributable, which nobody installing a plugin should need.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 

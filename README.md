@@ -30,11 +30,14 @@ with the plugin or the window, so nothing is left holding the adapter.
 
 ## Installing
 
+In pycangui, *Manage plugins*, *Check for plugins*, or install the zip from the
+[releases](https://github.com/davhodg/pycangui-ethercat/releases). One zip serves Windows and
+Linux: it carries the helper for each.
+
 It needs pycangui with plugin API 3, which is in the release after 0.6.2; until then, pycangui
 from master. On Windows, install [Npcap](https://npcap.com) as well; the pane says so if it is
-missing. On Linux the helper needs root or `CAP_NET_RAW` to open an adapter.
-
-There are no releases yet.
+missing. On Linux the helper needs root or `CAP_NET_RAW` to open an adapter, and glibc 2.35 or
+later.
 
 ## Developing
 
@@ -64,6 +67,15 @@ Both go into `ethercat/bin`. On Windows it uses MSVC, found with vswhere.
   `test_with_cia402.py` drives the scripted drive from the CiA 402 plugin, which it takes
   from a [pycangui-cia402](https://github.com/davhodg/pycangui-cia402) checkout beside this
   one (or `PYCANGUI_CIA402`), and skips without one.
+
+A release: set `VERSION` in `ethercat/plugin.py`, push a tag `v<VERSION>`, and the CI builds and
+tests the helper on Windows and Linux and makes the release with the zip (`build/pack.py`). Then
+write `plugins.json` from that zip, and commit it:
+
+```
+gh release download v0.1 --pattern "*.zip" --dir dist
+.venv/Scripts/python build/pack.py --list dist/ethercat-0.1.zip
+```
 
 The C follows the project's C coding standard: fixed-width types, state in a context, no
 allocation, MISRA C:2023 deviations noted where they are made.
