@@ -22,7 +22,10 @@ from .ring import Ring
 API_VERSION = 3
 NAME = "EtherCAT"
 VERSION = "0.1"
-DESCRIPTION = "Scan an EtherCAT ring, set slave states, and read and write objects by CoE."
+DESCRIPTION = (
+    "Scans an EtherCAT ring, sets its slaves' states, reads and writes their objects, "
+    "and runs their process data."
+)
 
 
 def register(app) -> None:
