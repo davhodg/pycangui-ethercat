@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "plugins": [
+    {
+      "name": "ethercat",
+      "title": "EtherCAT",
+      "description": "Scans an EtherCAT ring, sets its slaves' states, reads and writes their objects, and runs their process data.",
+      "version": "0.1",
+      "api_version": 3,
+      "url": "https://github.com/davhodg/pycangui-ethercat/releases/download/v0.1/ethercat-0.1.zip",
+      "sha256": "a4c9925f9ec8bac690bce8112ee1a1b254cef8101152b273814757fa31041f14",
+      "page": "https://github.com/davhodg/pycangui-ethercat"
+    }
+  ]
+}
