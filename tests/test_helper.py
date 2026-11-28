@@ -4,8 +4,9 @@
 
 The C tests cover each request against the scripted ring; these cover what
 only the running program does -- the port on its first line, one connection,
-lines split across reads, a line too long, and going when its stdin or its
-connection closes -- and the client the plugin speaks to it with.
+the token it reads on stdin and will hear from nobody else, lines split across
+reads, a line too long, and going when its stdin or pycangui's connection
+closes -- and the client the plugin speaks to it with.
 
 Needs the helpers built: python build/build.py.
 """
@@ -28,9 +29,17 @@ FAKE = ROOT / "ethercat" / "bin" / f"ecat_helper_fake{EXE}"
 REAL = ROOT / "ethercat" / "bin" / f"ecat_helper{EXE}"
 RING = "\\Device\\NPF_{FAKE-0001}"
 EMPTY = "\\Device\\NPF_{FAKE-0002}"
+#: What pycangui would write on the helper's stdin.
+TOKEN = "0123456789abcdef0123456789abcdef"
+
+
+def hello_line(ident: int = 1, token: str = TOKEN) -> bytes:
+    hello = {"id": ident, "op": "hello", "version": PROTOCOL, "token": token}
+    return json.dumps(hello).encode() + b"\n"
 
 
 def start(program: Path = FAKE, **env: str) -> tuple[subprocess.Popen, int]:
+    """The helper, given its token on stdin as pycangui gives it."""
     if not program.is_file():
         pytest.fail(f"{program.name} is not built: python build/build.py")
     process = subprocess.Popen(
@@ -40,8 +49,19 @@ def start(program: Path = FAKE, **env: str) -> tuple[subprocess.Popen, int]:
         stderr=subprocess.PIPE,
         env={**os.environ, **env},
     )
+    process.stdin.write(f"{TOKEN}\n".encode())
+    process.stdin.flush()
     port = int(process.stdout.readline())
     return process, port
+
+
+def dropped(lines) -> bool:
+    """Whether the helper has closed the connection: an end of file, or on
+    Windows, a write after it closed answered by the connection being reset."""
+    try:
+        return lines.readline() == b""
+    except OSError:
+        return True
 
 
 @pytest.fixture
@@ -56,7 +76,7 @@ def helper():
 @pytest.fixture
 def client(helper):
     made = Client(helper[1])
-    made.hello()
+    made.hello(TOKEN)
     yield made
     made.close()
 
@@ -65,7 +85,7 @@ def test_the_first_line_is_a_port_on_this_machine_only(helper):
     _process, port = helper
     assert 0 < port < 65536
     with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-        sock.sendall(b'{"id":1,"op":"hello","version":1}\n')
+        sock.sendall(hello_line())
         assert json.loads(sock.makefile("rb").readline())["ok"] is True
 
 
@@ -80,16 +100,60 @@ def test_closing_stdin_stops_it(helper):
 def test_closing_the_connection_stops_it(helper):
     """So nothing is left holding the network card after the plugin has gone."""
     process, port = helper
-    Client(port).close()
+    made = Client(port)
+    made.hello(TOKEN)
+    made.close()
     assert process.wait(5) == 0
+
+
+def test_a_connection_with_the_wrong_token_is_told_nothing_and_dropped(helper):
+    """Any program on the computer can reach the port: without the token it
+    learns nothing -- not even the version -- and pycangui's still gets in."""
+    process, port = helper
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        lines = sock.makefile("rb")
+        sock.sendall(hello_line(token="f" * 32))
+        answer = json.loads(lines.readline())
+        assert (answer["ok"], answer["error"]) == (False, "token")
+        assert "version" not in answer
+        sock.sendall(b'{"id":2,"op":"adapters"}\n')
+        assert dropped(lines)
+    assert process.poll() is None, "still waiting for pycangui's connection"
+    made = Client(port)
+    assert made.hello(TOKEN)["version"] == PROTOCOL
+    made.close()
+    assert process.wait(5) == 0
+
+
+def test_a_connection_that_says_nothing_does_not_keep_pycangui_out(helper):
+    """One that connects first and sits there is dropped once its time for a
+    hello is up, and pycangui's, waiting behind it, is answered."""
+    _process, port = helper
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as squatter:
+        made = Client(port)
+        began = time.monotonic()
+        assert made.hello(TOKEN)["version"] == PROTOCOL
+        assert time.monotonic() - began < 8
+        assert dropped(squatter.makefile("rb"))
+        made.close()
+
+
+def test_without_a_token_it_does_not_start():
+    """Started by hand, or by a pycangui that gives none: it serves nothing."""
+    if not FAKE.is_file():
+        pytest.fail(f"{FAKE.name} is not built: python build/build.py")
+    done = subprocess.run([str(FAKE)], input=b"", capture_output=True, timeout=10, check=False)
+    assert done.returncode == 1
+    assert done.stdout == b"", "no port"
 
 
 def test_a_request_split_across_reads_and_two_in_one_are_both_answered(helper):
     _process, port = helper
     with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
         lines = sock.makefile("rb")
-        sock.sendall(b'{"id":1,"op":"hel')
-        sock.sendall(b'lo","version":1}\n{"id":2,"op":"adapters"}\n')
+        line = hello_line()
+        sock.sendall(line[:10])
+        sock.sendall(line[10:] + b'{"id":2,"op":"adapters"}\n')
         first, second = json.loads(lines.readline()), json.loads(lines.readline())
     assert (first["id"], first["ok"]) == (1, True)
     assert (second["id"], len(second["adapters"])) == (2, 2)
@@ -99,7 +163,7 @@ def test_a_line_too_long_is_answered_and_the_next_one_still_is(helper):
     _process, port = helper
     with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
         lines = sock.makefile("rb")
-        sock.sendall(b'{"id":1,"op":"hello","version":1}\n')
+        sock.sendall(hello_line())
         lines.readline()
         sock.sendall(b'{"id":2,"op":"open","adapter":"' + b"x" * 10000 + b'"}\n')
         assert json.loads(lines.readline())["error"] == "too_long"
@@ -110,10 +174,10 @@ def test_a_line_too_long_is_answered_and_the_next_one_still_is(helper):
 def test_the_hello_agrees_the_version(helper):
     made = Client(helper[1])
     with pytest.raises(HelperError) as refused:
-        made.request("hello", version=PROTOCOL + 1)
+        made.request("hello", version=PROTOCOL + 1, token=TOKEN)
     assert refused.value.code == "version"
     assert refused.value.answer["version"] == PROTOCOL
-    hello = made.hello()
+    hello = made.hello(TOKEN)
     assert hello["version"] == PROTOCOL and hello["driver"] is True
     made.close()
 
@@ -202,7 +266,7 @@ def test_without_the_driver_it_starts_and_says_so():
     process, port = start(ECAT_FAKE_NO_DRIVER="1")
     try:
         made = Client(port)
-        assert made.hello()["driver"] is False
+        assert made.hello(TOKEN)["driver"] is False
         for op, fields in (("adapters", {}), ("open", {"adapter": RING})):
             with pytest.raises(HelperError) as refused:
                 made.request(op, **fields)
@@ -218,7 +282,7 @@ def test_the_real_helper_starts_and_says_whether_it_has_its_driver():
     process, port = start(REAL)
     try:
         made = Client(port)
-        hello = made.hello()
+        hello = made.hello(TOKEN)
         assert hello["master"].startswith("SOEM ")
         assert isinstance(hello["driver"], bool)
         if not hello["driver"]:

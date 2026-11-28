@@ -123,17 +123,18 @@ class Ring(QObject):
             worker.stop()
 
     def _ready(self, port: int | None) -> None:
-        if port is None or self._worker is None:
+        if port is None or self._worker is None or self._helper is None:
             return
-        self._worker.submit(lambda: self._connect(port), self._connected)
+        token = self._helper.token  # new each time pycangui starts it
+        self._worker.submit(lambda: self._connect(port, token), self._connected)
 
-    def _connect(self, port: int) -> dict:
+    def _connect(self, port: int, token: str) -> dict:
         if self._client is not None:
             self._client.close()
             self._client = None
         client = Client(port)
         try:
-            hello = client.hello()
+            hello = client.hello(token)
         except Exception:
             client.close()
             raise

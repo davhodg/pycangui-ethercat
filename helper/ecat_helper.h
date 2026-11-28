@@ -41,7 +41,8 @@
 /*============================================================================*/
 /*!@{*/
 
-#define ECAT_HELPER_PROTOCOL        ( 1U )      /*!< The protocol version this helper speaks */
+#define ECAT_HELPER_PROTOCOL        ( 2U )      /*!< The protocol version this helper speaks */
+#define ECAT_HELPER_TOKEN_LEN       ( 64U )     /*!< Longest token, without its terminator */
 #define ECAT_HELPER_DATA_LEN        ( ( ECAT_JSON_TEXT_LEN - 1U ) / 2U )   /*!< Longest SDO value, in bytes: what fits a request as hex */
 #define ECAT_HELPER_STATE_TIMEOUT_MS ( 2000U )  /*!< How long a state change is waited for, unless the request says */
 #define ECAT_HELPER_MAX_ENTRIES     ( 512U )    /*!< Most PDO entries listed, over all slaves */
@@ -68,7 +69,9 @@ typedef struct
 typedef struct
 {
     ECAT_PORT_CTX_T*    port_p;                                 /*!< The master */
+    char                token[ECAT_HELPER_TOKEN_LEN + 1U];      /*!< What the hello must say: pycangui gave it on stdin */
     bool                hello;                                  /*!< The hello has been answered: other requests are taken */
+    bool                refused;                                /*!< A hello came with the wrong token: drop the connection */
     ECAT_JSON_OBJ_T     request;                                /*!< The request being handled */
     uint8_t             data[ECAT_HELPER_DATA_LEN];             /*!< An SDO value on its way through */
     ECAT_PORT_ADAPTER_T adapters[ECAT_PORT_MAX_ADAPTERS];       /*!< The adapters, while they are listed */
@@ -91,10 +94,32 @@ typedef struct
 
     \param  ctx_p   The helper.
     \param  port_p  The master it works.
+    \param  token   What the hello must say, up to ECAT_HELPER_TOKEN_LEN characters; a
+                    longer one is cut, and an empty one is never matched.
 
     \return None.
 */
-void ecat_helper_init( ECAT_HELPER_CTX_T* const ctx_p, ECAT_PORT_CTX_T* const port_p );
+void ecat_helper_init( ECAT_HELPER_CTX_T* const ctx_p, ECAT_PORT_CTX_T* const port_p, char const token[] );
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  Whether a hello with the right token has been answered.
+
+    \param  ctx_p   The helper.
+
+    \return true once the connection is the one pycangui made.
+*/
+bool ecat_helper_greeted( ECAT_HELPER_CTX_T const* const ctx_p );
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  Whether a hello came with the wrong token, so the connection is to be dropped.
+
+    \param  ctx_p   The helper.
+
+    \return true when it is not pycangui's.
+*/
+bool ecat_helper_refused( ECAT_HELPER_CTX_T const* const ctx_p );
 
 /*----------------------------------------------------------------------------*/
 /*!

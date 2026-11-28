@@ -46,6 +46,7 @@ typedef struct
 
 static void handle( ECAT_HELPER_CTX_T* const ctx_p, char const op[], ECAT_JSON_OUT_T* const out_p );
 static void do_hello( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p );
+static bool same_token( char const expected[], char const given[] );
 static void do_adapters( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p );
 static void do_open( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p );
 static void do_scan( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out_p );
@@ -124,13 +125,40 @@ static STATE_NAME_T const state_names[] =
 /*!
     \note   Interface documented in ecat_helper.h.
 */
-void ecat_helper_init( ECAT_HELPER_CTX_T* const ctx_p, ECAT_PORT_CTX_T* const port_p )
+void ecat_helper_init( ECAT_HELPER_CTX_T* const ctx_p, ECAT_PORT_CTX_T* const port_p, char const token[] )
 {
+    size_t len = 0U;
+
+    while( ( len < ECAT_HELPER_TOKEN_LEN ) && ( '\0' != token[len] ) )
+    {
+        ctx_p->token[len] = token[len];
+        len++;
+    }
+    ctx_p->token[len] = '\0';
     ctx_p->port_p = port_p;
     ctx_p->hello = false;
+    ctx_p->refused = false;
     ctx_p->request.count = 0U;
     unmap( ctx_p );
     return;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \note   Interface documented in ecat_helper.h.
+*/
+bool ecat_helper_greeted( ECAT_HELPER_CTX_T const* const ctx_p )
+{
+    return ctx_p->hello;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \note   Interface documented in ecat_helper.h.
+*/
+bool ecat_helper_refused( ECAT_HELPER_CTX_T const* const ctx_p )
+{
+    return ctx_p->refused;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -281,10 +309,14 @@ static void handle( ECAT_HELPER_CTX_T* const ctx_p, char const op[], ECAT_JSON_O
 
 /*----------------------------------------------------------------------------*/
 /*!
-    \brief  hello: agree the protocol version before anything else.
+    \brief  hello: the token pycangui gave, and the protocol version, before anything else.
+
+    The token first: a connection that cannot say it is not pycangui's -- any
+    program on the computer can reach 127.0.0.1 -- and is told nothing more,
+    not even the version, before it is dropped.
 
     \param  ctx_p   The helper.
-    \param  out_p   The answer: the version this helper speaks, either way.
+    \param  out_p   The answer: with the right token, the version this helper speaks, either way.
 
     \return None.
 */
@@ -292,8 +324,15 @@ static void do_hello( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out
 {
     ECAT_JSON_FIELD_T const* const id_p = ecat_json_get( &ctx_p->request, "id", ECAT_JSON_KIND_NUMBER );
     ECAT_JSON_FIELD_T const* const version_p = ecat_json_get( &ctx_p->request, "version", ECAT_JSON_KIND_NUMBER );
+    ECAT_JSON_FIELD_T const* const token_p = ecat_json_get( &ctx_p->request, "token", ECAT_JSON_KIND_STRING );
 
-    if( ( NULL == version_p ) || ( ECAT_HELPER_PROTOCOL != version_p->number ) )
+    if( ( NULL == token_p ) || ( !same_token( ctx_p->token, token_p->text ) ) )
+    {
+        ctx_p->hello = false;
+        ctx_p->refused = true;
+        put_error( out_p, id_p, "token" );
+    }
+    else if( ( NULL == version_p ) || ( ECAT_HELPER_PROTOCOL != version_p->number ) )
     {
         ctx_p->hello = false;
         ecat_json_out_open( out_p, NULL, false );
@@ -320,6 +359,43 @@ static void do_hello( ECAT_HELPER_CTX_T* const ctx_p, ECAT_JSON_OUT_T* const out
         ecat_json_out_close( out_p, false );
     }
     return;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  Whether the token given is the one expected, taking as long whatever it says.
+
+    Every character of the expected token is looked at, wherever the first
+    difference is, so the time an answer takes does not give away how much of a
+    guess was right.
+
+    \param  expected    The helper's token; empty never matches.
+    \param  given       What the hello said.
+
+    \return true when they are the same.
+*/
+static bool same_token( char const expected[], char const given[] )
+{
+    size_t const len = strlen( expected );
+    uint32_t differ = ( 0U == len ) ? 1U : 0U;
+    bool ended = false;     /* given is shorter: compare against its terminator from here on */
+
+    for( size_t idx = 0U; idx < len; idx++ )
+    {
+        char const g = ended ? '\0' : given[idx];
+
+        ended = ended || ( '\0' == g );
+        differ |= (uint32_t)( (uint8_t)expected[idx] ^ (uint8_t)g );
+    }
+    if( ( !ended ) && ( '\0' != given[len] ) )
+    {
+        differ |= 1U;       /* given is longer */
+    }
+    else
+    {
+        /* Same length, or already different. */
+    }
+    return ( 0U == differ );
 }
 
 /*----------------------------------------------------------------------------*/

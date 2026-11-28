@@ -20,7 +20,7 @@ from typing import Any
 from PySide6.QtCore import QObject, Signal
 
 #: The protocol version this plugin speaks; the helper says which it speaks.
-PROTOCOL = 1
+PROTOCOL = 2
 #: Long enough for the slowest request -- a state change may be given 60 s --
 #: and no longer: a helper that has stopped answering closes its socket, which
 #: is noticed at once, so this is only for one that has hung.
@@ -82,9 +82,11 @@ class Client:
             raise HelperError(str(answer.get("error", "failed")), answer)
         return answer
 
-    def hello(self) -> dict:
-        """Agree the protocol version: HelperError("version") if the helper's differs."""
-        return self.request("hello", version=PROTOCOL)
+    def hello(self, token: str) -> dict:
+        """Say the token pycangui gave the helper, and agree the protocol version:
+        HelperError("token") if the token is not the helper's, which then drops
+        the connection, and HelperError("version") if its version differs."""
+        return self.request("hello", version=PROTOCOL, token=token)
 
     def close(self) -> None:
         try:

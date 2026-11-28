@@ -67,6 +67,9 @@ static ECAT_HELPER_CTX_T helper;    /*!< The helper under test */
 static ECAT_JSON_OUT_T answer;      /*!< The last answer */
 static ECAT_JSON_OBJ_T obj;         /*!< A request, read */
 
+/*! The token the tests give the helper, as pycangui would on its stdin. */
+#define TEST_TOKEN  "0123456789abcdef0123456789abcdef"
+
 /*!@}*/
 
 /*============================================================================*/
@@ -109,9 +112,9 @@ static bool has( char const text[] )
 */
 static void start( void )
 {
-    ecat_helper_init( &helper, ecat_port_instance() );     /* stops a cycle an earlier test left */
+    ecat_helper_init( &helper, ecat_port_instance(), TEST_TOKEN );     /* stops a cycle an earlier test left */
     ecat_port_close( ecat_port_instance() );
-    ask( "{\"id\":1,\"op\":\"hello\",\"version\":1}" );
+    ask( "{\"id\":1,\"op\":\"hello\",\"version\":2,\"token\":\"" TEST_TOKEN "\"}" );
     return;
 }
 
@@ -215,19 +218,54 @@ static void test_hex_both_ways( void )
 static void test_the_hello_comes_first_and_agrees_the_version( void )
 {
     ecat_port_close( ecat_port_instance() );
-    ecat_helper_init( &helper, ecat_port_instance() );
+    ecat_helper_init( &helper, ecat_port_instance(), TEST_TOKEN );
 
     ask( "{\"id\":7,\"op\":\"adapters\"}" );
     CHECK( has( "\"id\":7" ) && has( "\"ok\":false" ) && has( "\"error\":\"hello_first\"" ) );
 
-    ask( "{\"id\":8,\"op\":\"hello\",\"version\":2}" );
-    CHECK( has( "\"ok\":false" ) && has( "\"error\":\"version\"" ) && has( "\"version\":1" ) );
+    ask( "{\"id\":8,\"op\":\"hello\",\"version\":3,\"token\":\"" TEST_TOKEN "\"}" );
+    CHECK( has( "\"ok\":false" ) && has( "\"error\":\"version\"" ) && has( "\"version\":2" ) );
+    CHECK( !ecat_helper_refused( &helper ) );
     ask( "{\"id\":9,\"op\":\"adapters\"}" );
     CHECK( has( "\"error\":\"hello_first\"" ) );
 
-    ask( "{\"id\":10,\"op\":\"hello\",\"version\":1}" );
-    CHECK( has( "\"id\":10" ) && has( "\"ok\":true" ) && has( "\"version\":1" ) && has( "\"master\":\"fake ring\"" ) &&
+    ask( "{\"id\":10,\"op\":\"hello\",\"version\":2,\"token\":\"" TEST_TOKEN "\"}" );
+    CHECK( has( "\"id\":10" ) && has( "\"ok\":true" ) && has( "\"version\":2" ) && has( "\"master\":\"fake ring\"" ) &&
            has( "\"driver\":true" ) );
+    CHECK( ecat_helper_greeted( &helper ) );
+    return;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+    \brief  A hello without the token is refused and told nothing, however near it comes.
+
+    \return None.
+*/
+static void test_the_hello_must_say_the_token( void )
+{
+    static char const* const wrong[] =
+    {
+        "{\"id\":1,\"op\":\"hello\",\"version\":2}",                                             /* none */
+        "{\"id\":1,\"op\":\"hello\",\"version\":2,\"token\":\"\"}",                              /* empty */
+        "{\"id\":1,\"op\":\"hello\",\"version\":2,\"token\":\"0123456789abcdef0123456789abcdee\"}", /* last differs */
+        "{\"id\":1,\"op\":\"hello\",\"version\":2,\"token\":\"0123456789abcdef0123456789abcde\"}",  /* shorter */
+        "{\"id\":1,\"op\":\"hello\",\"version\":2,\"token\":\"0123456789abcdef0123456789abcdef0\"}", /* longer */
+        "{\"id\":1,\"op\":\"hello\",\"version\":2,\"token\":7}",                                 /* not a string */
+    };
+
+    for( size_t idx = 0U; idx < ( sizeof( wrong ) / sizeof( wrong[0] ) ); idx++ )
+    {
+        ecat_helper_init( &helper, ecat_port_instance(), TEST_TOKEN );
+        ask( wrong[idx] );
+        CHECK( has( "\"ok\":false" ) && has( "\"error\":\"token\"" ) && ( !has( "\"version\"" ) ) );
+        CHECK( ecat_helper_refused( &helper ) && ( !ecat_helper_greeted( &helper ) ) );
+    }
+
+    /* A helper given no token takes no hello at all, even one with none. */
+    ecat_helper_init( &helper, ecat_port_instance(), "" );
+    ask( "{\"id\":1,\"op\":\"hello\",\"version\":2,\"token\":\"\"}" );
+    CHECK( has( "\"error\":\"token\"" ) && ( !ecat_helper_greeted( &helper ) ) );
     return;
 }
 
@@ -666,6 +704,7 @@ int main( void )
     test_json_refuses_what_it_does_not_read();
     test_hex_both_ways();
     test_the_hello_comes_first_and_agrees_the_version();
+    test_the_hello_must_say_the_token();
     test_requests_that_cannot_be_followed();
     test_adapters_are_listed_and_opened_by_name();
     test_a_scan_lists_the_slaves_in_preop();
@@ -677,7 +716,7 @@ int main( void )
     test_a_slave_leaving_op_is_counted();
     test_process_data_refusals_and_its_end();
     test_stop_leaves_pre_op_ready_to_start_again();
-    ecat_helper_init( &helper, ecat_port_instance() );     /* stops the last cycle */
+    ecat_helper_init( &helper, ecat_port_instance(), TEST_TOKEN );     /* stops the last cycle */
 
     ( void )printf( "%u checks, %u failed\n", (unsigned int)checks, (unsigned int)failures );
     return ( 0U == failures ) ? 0 : 1;

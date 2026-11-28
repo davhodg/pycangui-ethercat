@@ -46,6 +46,7 @@ ERRORS = {
     "no_driver": "Npcap is not installed. EtherCAT frames are sent through Npcap: install it "
     "from npcap.com, then press Start again.",
     "version": "The helper speaks a different protocol version: reinstall the plugin.",
+    "token": "The helper refused the connection: reinstall the plugin.",
     "lost": "The helper has stopped.",
     "not_connected": "The helper is not running yet.",
     "not_open": "No adapter is open.",

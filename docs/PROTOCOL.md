@@ -1,14 +1,20 @@
-# The helper protocol, version 1
+# The helper protocol, version 2
 
 The plugin and the helper program talk over TCP on 127.0.0.1, one JSON object per line, UTF-8.
 
 ## Starting and stopping
 
+- The first line of the helper's standard input is a token: up to 64 characters, new each time it
+  starts, which pycangui's `app.helper` writes there and gives the plugin as `helper.token`. A
+  helper that gets none, or an empty one, exits with code 1 before it listens.
 - The helper listens on 127.0.0.1 on a port the system picks, and prints the port as the first line
   of its standard output. pycangui's `app.helper` reads it.
-- It takes **one** connection, and exits when that connection closes or when its standard input
-  closes. pycangui stops a helper by closing its standard input, so a helper never outlives the
-  plugin or the window.
+- Any program on the computer can connect to that port, so a connection is taken only once its
+  hello says the token. One whose hello says another is answered `token` and dropped, and so is one
+  that has said no hello within 5 s; the helper then waits for the next.
+- It serves **one** connection that said the token, and exits when that connection closes or when
+  its standard input closes. pycangui stops a helper by closing its standard input, so a helper
+  never outlives the plugin or the window.
 - Nothing else is printed on standard output. Messages for people go to standard error, which
   pycangui puts in the Event Log.
 
@@ -40,10 +46,12 @@ The first request must be `hello`. Anything else before it is answered `hello_fi
 
 | Request | Answer |
 |---|---|
-| `{"op":"hello","version":1}` | `version` (the helper's), `master` (`"SOEM 2.0.1"`), `driver` (whether Npcap is there, on Windows) |
+| `{"op":"hello","version":2,"token":"..."}` | `version` (the helper's), `master` (`"SOEM 2.0.1"`), `driver` (whether Npcap is there, on Windows) |
 
-A version the helper does not speak is answered `"error":"version"` with the `version` it does
-speak, and the hello is not taken.
+The token is checked first. A hello without the helper's token is answered `"error":"token"`, with
+nothing else, not even the version, and the connection is closed. With the token, a version the
+helper does not speak is answered `"error":"version"` with the `version` it does speak, and the
+hello is not taken.
 
 ## Operations
 
@@ -102,6 +110,7 @@ so a value of whole bytes at a whole byte is little-endian, as on the wire. Byte
 |---|---|
 | `bad_request` | Not a request this helper takes: a field missing, of the wrong kind or out of range |
 | `hello_first` | No hello yet |
+| `token` | The hello did not say the helper's token: the connection is closed |
 | `version` | The hello's version is not this helper's |
 | `unknown_op` | No such `op` |
 | `too_long` | The request line, or the answer, is too long |
